@@ -32,10 +32,11 @@ func (t *Transport) log() *log.Logger {
 	return log.Nop()
 }
 
-func New(rawURL string) *Transport {
+func New(rawURL string, serverName string) *Transport {
 	return &Transport{
-		URL:     rawURL,
-		Timeout: 5 * time.Second,
+		URL:        rawURL,
+		ServerName: serverName,
+		Timeout:    5 * time.Second,
 	}
 }
 
