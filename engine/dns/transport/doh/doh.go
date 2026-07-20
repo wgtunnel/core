@@ -16,8 +16,8 @@ import (
 )
 
 type Transport struct {
-	URL         string // full URL, should be pre-resolved
-	ServerName  string // SNI + Host header
+	URLs        []string // full URLs, should be pre-resolved
+	ServerName  string   // SNI + Host header
 	Timeout     time.Duration
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -32,9 +32,9 @@ func (t *Transport) log() *log.Logger {
 	return log.Nop()
 }
 
-func New(rawURL string, serverName string) *Transport {
+func New(rawURLs []string, serverName string) *Transport {
 	return &Transport{
-		URL:        rawURL,
+		URLs:       rawURLs,
 		ServerName: serverName,
 		Timeout:    5 * time.Second,
 	}
@@ -62,20 +62,36 @@ func (t *Transport) init() {
 }
 
 func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
-	t.init()
-
-	if len(msg.Question) > 0 {
-		t.log().Verbosef("DoH Exchange via %s for %s", t.URL, msg.Question[0].Name)
+	if len(t.URLs) == 0 {
+		return nil, fmt.Errorf("doh: no urls configured")
 	}
+	t.init()
 
 	wire, err := msg.Pack()
 	if err != nil {
 		return nil, fmt.Errorf("doh: pack: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.URL, bytes.NewReader(wire))
+	var lastErr error
+	for _, rawURL := range t.URLs {
+		out, err := t.exchangeOne(ctx, wire, rawURL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return out, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("doh: all urls failed")
+	}
+	return nil, lastErr
+}
+
+func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string) (*dns.Msg, error) {
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(wire))
 	if err != nil {
-		return nil, fmt.Errorf("doh: request: %w", err)
+		return nil, fmt.Errorf("doh: request %s: %w", rawURL, err)
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
@@ -85,22 +101,22 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("doh: do: %w", err)
+		return nil, fmt.Errorf("doh: do %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("doh: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("doh: status %d from %s", resp.StatusCode, rawURL)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if err != nil {
-		return nil, fmt.Errorf("doh: read: %w", err)
+		return nil, fmt.Errorf("doh: read %s: %w", rawURL, err)
 	}
 
 	out := new(dns.Msg)
 	if err := out.Unpack(body); err != nil {
-		return nil, fmt.Errorf("doh: unpack: %w", err)
+		return nil, fmt.Errorf("doh: unpack %s: %w", rawURL, err)
 	}
 	return out, nil
 }

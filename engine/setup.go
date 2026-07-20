@@ -38,7 +38,7 @@ func SetupTunnelDNSEngine(sc SetupConfig) (*dns.Engine, error) {
 
 	switch cfg.DefaultTransport {
 	case "doh":
-		engine.RegisterTransport("doh", doh.New(cfg.Upstream[0], cfg.ServerName))
+		engine.RegisterTransport("doh", doh.New(cfg.Upstream, cfg.ServerName))
 
 	case "dot":
 		engine.RegisterTransport("dot", dot.New(cfg.Upstream, cfg.ServerName))
