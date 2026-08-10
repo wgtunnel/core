@@ -1,0 +1,31 @@
+WG Tunnel Backend
+Copyright (c) 2026 Zane Schepke
+
+This product is primarily licensed under the MIT License.
+See the LICENSE file in the project root.
+
+---------------------------------------------------------------------------
+Third-party and derived components
+---------------------------------------------------------------------------
+
+Desktop firewall and router (portions of native/backend/vpn/firewall and native/backend/vpn/router)
+  Derived from Tailscale[](https://github.com/tailscale/tailscale)
+  Copyright (c) Tailscale Inc & contributors
+  Licensed under the BSD 3-Clause License
+  See LICENSES/BSD-3-Clause.txt
+
+github.com/tailscale/wf
+  Copyright (c) Tailscale Inc & contributors
+  Licensed under the BSD 3-Clause License
+  https://github.com/tailscale/wf
+  See LICENSES/BSD-3-Clause.txt
+
+amneziawg-go
+  Copyright (c) AmneziaVPN and contributors
+  Licensed under the MIT License
+  https://github.com/amnezia-vpn/amneziawg-go
+
+hev-socks5-tunnel
+  Copyright (c) hev and contributors
+  Licensed under the MIT License
+  https://github.com/heiher/hev-socks5-tunnel

@@ -1,0 +1,280 @@
+package proxy
+
+/*
+#include "vpn_jni.h"
+*/
+import "C"
+import (
+	"context"
+	"net"
+	"sync"
+
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
+	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
+	binder "github.com/wgtunnel/backend/bind"
+	"github.com/wgtunnel/backend/constants"
+	"github.com/wgtunnel/backend/handle"
+	"github.com/wgtunnel/backend/ipc"
+	"github.com/wgtunnel/backend/log"
+	"github.com/wgtunnel/backend/roaming"
+	"github.com/wgtunnel/backend/tunwrap"
+)
+
+const tag = "ProxyBackend"
+
+var (
+	cancelFuncs          map[int32]context.CancelFunc
+	virtualTunnelHandles map[int32]*wireproxyawg.VirtualTun
+	lastTunnelStatus     sync.Map
+	tunnelMu             sync.RWMutex
+)
+
+func init() {
+	virtualTunnelHandles = make(map[int32]*wireproxyawg.VirtualTun)
+	cancelFuncs = make(map[int32]context.CancelFunc)
+}
+
+//export startProxy
+func startProxy(ifName string, config string, uapiPath string, bypass int32, dnsConfig string) int32 {
+	conf, err := wireproxyawg.ParseConfigString(config)
+	if err != nil {
+		log.Error(tag, "Invalid config file", err)
+		return -1
+	}
+
+	tunHandle, err := handle.GenerateUniqueHandle()
+	if err != nil {
+		log.Error(tag, "Error generating handle: %v", err)
+		return -1
+	}
+
+	setting, err := wireproxyawg.CreateIPCRequest(conf.Device, false)
+	if err != nil {
+		log.Error(tag, "Create IPC request failed")
+		handle.ReleaseHandle(tunHandle)
+		return -1
+	}
+
+	tun, tnet, err := netstack.CreateNetTUN(
+		setting.DeviceAddr,
+		setting.DNS,
+		setting.MTU,
+	)
+	if err != nil {
+		log.Error(tag, "Create TUN failed")
+		handle.ReleaseHandle(tunHandle)
+		return -1
+	}
+
+	deviceTUN, err := tunwrap.MaybeWrapTUN(tun, dnsConfig)
+	if err != nil {
+		log.Error(tag, "DNS wrap: %v", err)
+		return -1
+	}
+
+	tunName, err := tun.Name()
+	if err != nil {
+		log.Error(tag, "Failed to get TUN name: %v", err)
+		handle.ReleaseHandle(tunHandle)
+		tun.Close()
+		return -1
+	}
+
+	var bind conn.Bind
+	if bypass == 1 {
+		bind = binder.NewBind()
+	} else {
+		bind = conn.NewStdNetBind()
+	}
+
+	statusCB := func(code device.StatusCode) {
+		key := tunHandle
+		if prev, loaded := lastTunnelStatus.LoadOrStore(key, code); loaded {
+			if prev == code {
+				return // duplicate, skip
+			}
+			lastTunnelStatus.Store(key, code)
+		}
+		go C.notifyStatus(C.int32_t(tunHandle), C.int32_t(code))
+	}
+
+	tunDevice := device.NewDevice(
+		deviceTUN,
+		bind,
+		log.WithTag("ProxyTun/"+ifName).DeviceLogger(),
+		statusCB,
+	)
+
+	roaming.ApplyRoaming(tunDevice)
+
+	if err = tunDevice.IpcSet(setting.IpcRequest); err != nil {
+		log.Error(tag, "Ipc setting failed")
+		handle.ReleaseHandle(tunHandle)
+		tunDevice.Close()
+		return -1
+	}
+
+	var uapi net.Listener
+	uapi, err = ipc.SetupIPC(tunName, uapiPath)
+	if err != nil {
+		log.Error(tag, "SetupIPC: %v", err)
+	} else if uapi != nil {
+		go func() {
+			for {
+				connection, err := uapi.Accept()
+				if err != nil {
+					return
+				}
+				go tunDevice.IpcHandle(connection)
+			}
+		}()
+	}
+
+	if err = tunDevice.Up(); err != nil {
+		log.Error(tag, "Failed to bring up device")
+
+		if uapi != nil {
+			uapi.Close()
+		}
+		handle.ReleaseHandle(tunHandle)
+		tunDevice.Close()
+		return -1
+	}
+
+	virtualTun := &wireproxyawg.VirtualTun{
+		Tnet:           tnet,
+		Dev:            tunDevice,
+		Logger:         log.WithTag("Proxy").DeviceLogger(),
+		Uapi:           uapi,
+		Conf:           conf.Device,
+		PingRecord:     make(map[string]uint64),
+		PingRecordLock: new(sync.Mutex),
+	}
+
+	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
+
+	tunnelMu.Lock()
+	virtualTunnelHandles[tunHandle] = virtualTun
+	cancelFuncs[tunHandle] = tunnelCancel
+	tunnelMu.Unlock()
+
+	for _, spawner := range conf.Routines {
+		go func(s wireproxyawg.RoutineSpawner) {
+			if err := s.SpawnRoutine(tunnelCtx, virtualTun); err != nil {
+				log.Error(tag, "Routine failed: %v", err)
+			}
+		}(spawner)
+	}
+
+	log.Debug(tag, "Started proxy tunnel for handle %d", tunHandle)
+
+	return tunHandle
+}
+
+//export updateProxyTunnelPeers
+func updateProxyTunnelPeers(tunnelHandle int32, settings string) int32 {
+	tunnelMu.RLock()
+	virtualTun, ok := virtualTunnelHandles[tunnelHandle]
+	tunnelMu.RUnlock()
+	if !ok {
+		log.Error(tag, "Tunnel is not up")
+		return -1
+	}
+
+	conf, err := wireproxyawg.ParseConfigString(settings)
+	if err != nil {
+		log.Error(tag, "Invalid config file", err)
+		return -1
+	}
+
+	ipcRequest, err := wireproxyawg.CreatePeerIPCRequest(conf.Device)
+	if err != nil {
+		log.Error(tag, "CreateIPCRequest: %v", err)
+		return -1
+	}
+
+	err = virtualTun.Dev.IpcSet(ipcRequest.IpcRequest)
+	if err != nil {
+		log.Error(tag, "IpcSet: %v", err)
+		return -1
+	}
+
+	log.Debug(tag, "Configuration updated successfully")
+	return 0
+}
+
+//export getProxyConfig
+func getProxyConfig(tunnelHandle int32) *C.char {
+	tunnelMu.RLock()
+	handle, ok := virtualTunnelHandles[tunnelHandle]
+	tunnelMu.RUnlock()
+	if !ok {
+		log.Error(tag, "Tunnel is not up")
+		return nil
+	}
+	settings, err := handle.Dev.IpcGet()
+	if err != nil {
+		log.Error(tag, "Failed to get device config: %v", err)
+		return nil
+	}
+	return C.CString(settings)
+}
+
+//export turnProxyTunnelOff
+func turnProxyTunnelOff(virtualTunnelHandle int32) {
+
+	tunnelMu.Lock()
+
+	virtualTun, ok := virtualTunnelHandles[virtualTunnelHandle]
+	if !ok {
+		tunnelMu.Unlock()
+
+		log.Error(
+			tag,
+			"Tunnel handle %d not found",
+			virtualTunnelHandle,
+		)
+		return
+	}
+
+	cancel := cancelFuncs[virtualTunnelHandle]
+
+	delete(virtualTunnelHandles, virtualTunnelHandle)
+	delete(cancelFuncs, virtualTunnelHandle)
+
+	tunnelMu.Unlock()
+
+	log.Debug(
+		tag,
+		"Tearing down tunnel %d",
+		virtualTunnelHandle,
+	)
+
+	if cancel != nil {
+		cancel()
+	}
+
+	if virtualTun.Uapi != nil {
+		virtualTun.Uapi.Close()
+	}
+
+	if virtualTun.Dev != nil {
+		virtualTun.Dev.Close()
+	}
+
+	lastTunnelStatus.Delete(virtualTunnelHandle)
+	handle.ReleaseHandle(virtualTunnelHandle)
+
+	C.notifyStatus(
+		C.int32_t(virtualTunnelHandle),
+		C.int32_t(constants.StatusStop),
+	)
+
+	log.Debug(
+		tag,
+		"Tunnel handle %d fully closed",
+		virtualTunnelHandle,
+	)
+}
