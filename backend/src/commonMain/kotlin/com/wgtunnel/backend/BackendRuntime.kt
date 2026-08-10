@@ -28,8 +28,7 @@ object BackendRuntime {
     fun requireManager(): RuntimeManager =
         runtimeManager ?: error("BackendRuntime.install() not called")
 
-    fun requireBackend(): Backend =
-        backend ?: error("BackendRuntime.install() not called")
+    fun requireBackend(): Backend = backend ?: error("BackendRuntime.install() not called")
 
     fun requireProvider(): ApplicationProvider =
         applicationProvider ?: error("BackendRuntime.install() not called")

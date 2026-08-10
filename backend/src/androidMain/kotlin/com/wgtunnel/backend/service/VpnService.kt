@@ -19,6 +19,8 @@ import com.wgtunnel.backend.util.NetworkUtils
 import com.wgtunnel.hevtunnel.HevTunnelConfig
 import com.wgtunnel.hevtunnel.TProxyService
 import com.wgtunnel.parser.Config
+import java.io.IOException
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,16 +28,19 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.io.IOException
-import kotlin.time.Duration.Companion.milliseconds
 
 internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntime {
 
     private val log = Logger.withTag("VpnService")
 
-    private val serviceManager get() = BackendRuntime.requireManager()
-    private val backend get() = BackendRuntime.requireBackend()
-    private val provider get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
+    private val serviceManager
+        get() = BackendRuntime.requireManager()
+
+    private val backend
+        get() = BackendRuntime.requireBackend()
+
+    private val provider
+        get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val shutdownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -44,6 +49,8 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     @Volatile private var vpnTunFd: ParcelFileDescriptor? = null
 
     @Volatile internal var currentKillSwitchConfig: KillSwitchConfig? = null
+
+    @Volatile var isKillSwitchActive = false
 
     override fun onCreate() {
         serviceManager.set(this)
@@ -151,7 +158,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                     } catch (e: Exception) {
                         log.w(e) { "SOCKS5 connect failed (attempt ${attempt + 1})" }
                         if (attempt % 5 == 0) {
-                            log.d {"SOCKS5 not ready yet, retrying..." }
+                            log.d { "SOCKS5 not ready yet, retrying..." }
                         }
                         delay(300.milliseconds)
                     }
@@ -167,7 +174,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         // stop HEV when the job is canceled from stopHevSocks5Bridge or onDestroy
         job.invokeOnCompletion { cause ->
             if (cause != null) { // canceled or failed
-                log.d {"HEV bridge job stopped, shutting down native HEV" }
+                log.d { "HEV bridge job stopped, shutting down native HEV" }
                 TProxyService.TProxyStopService()
             }
             hevBridgeJob = null
@@ -186,7 +193,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         if (config == null) return disableKillSwitch()
 
         if (hevBridgeFd != null && currentKillSwitchConfig == config) {
-            log.d {"Kill Switch already active with identical config, skipping" }
+            log.d { "Kill Switch already active with identical config, skipping" }
             return
         }
 
@@ -214,9 +221,10 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                     addRoute(IPV6_DEFAULT_ROUTE, 0)
                     setMtu(DEFAULT_MTU)
                     addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
-                    if(config.dualStack) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
+                    if (config.dualStack) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
                 }
                 .establish()
+        isKillSwitchActive = true
         currentKillSwitchConfig = config
     }
 
@@ -279,8 +287,8 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                     }
 
                     if (fakeDns) {
-                        if(hasIpv4) addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
-                        if(hasIpv6) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
+                        if (hasIpv4) addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
+                        if (hasIpv6) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
                     }
 
                     // Only add DNS servers whose family is supported

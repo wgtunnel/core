@@ -11,7 +11,8 @@ internal object UrlParse {
         val at = rest.lastIndexOf('@')
         if (at >= 0) rest = rest.substring(at + 1)
         // authority ends at / ? #
-        val end = rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
+        val end =
+            rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
         val authority = rest.substring(0, end)
         return authorityHost(authority)
     }
@@ -23,7 +24,8 @@ internal object UrlParse {
         var rest = s.substring(schemeEnd + 3)
         val at = rest.lastIndexOf('@')
         if (at >= 0) rest = rest.substring(at + 1)
-        val end = rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
+        val end =
+            rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
         val authority = rest.substring(0, end)
         return authorityPort(authority)
     }

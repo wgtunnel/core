@@ -9,19 +9,24 @@ import androidx.lifecycle.lifecycleScope
 import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.AndroidApplicationProvider
 import com.wgtunnel.backend.BackendRuntime
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
 
 internal class VpnCompanionService : LifecycleService() {
 
     val log = Logger.withTag("VpnCompanionService")
 
-    private val serviceManager get() = BackendRuntime.requireManager()
-    private val backend get() = BackendRuntime.requireBackend()
-    private val provider get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
+    private val serviceManager
+        get() = BackendRuntime.requireManager()
+
+    private val backend
+        get() = BackendRuntime.requireBackend()
+
+    private val provider
+        get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
 
     private val notificationManager: NotificationManager by lazy {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -43,8 +48,7 @@ internal class VpnCompanionService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         serviceManager.set(this)
         val isSystemRestart =
-            intent?.component == null ||
-                    intent.component!!.packageName != packageName
+            intent?.component == null || intent.component!!.packageName != packageName
 
         if (isSystemRestart) {
             log.i { "VpnCompanionService started by system" }
@@ -69,8 +73,7 @@ internal class VpnCompanionService : LifecycleService() {
                 .distinctUntilChangedBy { it.toNotificationComparisonKey() }
                 .debounce(700.milliseconds)
                 .collect { status ->
-                    val notification =
-                        provider.buildVpnPersistentNotification(status)
+                    val notification = provider.buildVpnPersistentNotification(status)
                     notificationManager.notify(
                         provider.vpnNotificationId,
                         notification,

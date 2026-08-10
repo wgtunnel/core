@@ -57,47 +57,38 @@ kotlin {
         }
     }
 }
+
 mavenPublishing {
-    publishToMavenCentral()
-
-    signAllPublications()
-
     coordinates(group.toString(), "backend", version.toString())
-
-    mavenPublishing {
-        publishToMavenCentral()
-        signAllPublications()
-        coordinates(group.toString(), "backend", version.toString())
-        pom {
-            name = "WG Tunnel Backend"
-            description = "The core backend library for WG Tunnel apps."
-            inceptionYear = "2026"
-            url = "https://github.com/wgtunnel/core"
-            licenses {
-                license {
-                    name = "MIT License"
-                    url = "https://opensource.org/licenses/MIT"
-                    distribution = "repo"
-                }
-                license {
-                    name = "BSD 3-Clause License"
-                    url = "https://opensource.org/licenses/BSD-3-Clause"
-                    distribution = "repo"
-                }
+    pom {
+        name = "WG Tunnel Backend"
+        description = "The core backend library for WG Tunnel apps."
+        inceptionYear = "2026"
+        url = "https://github.com/wgtunnel/core"
+        licenses {
+            license {
+                name = "MIT License"
+                url = "https://github.com/wgtunnel/core/blob/main/LICENSE"
+                distribution = "repo"
             }
-            developers {
-                developer {
-                    id = "zaneschepke"
-                    name = "Zane Schepke"
-                    url = "https://zaneschepke.com"
-                    email = "dev@zaneschepke.com"
-                }
+            license {
+                name = "BSD 3-Clause License"
+                url = "https://github.com/wgtunnel/core/blob/master/LICENSES/BSD-3-Clause.txt"
+                distribution = "repo"
             }
-            scm {
-                connection.set("scm:git:git://github.com/wgtunnel/core.git")
-                developerConnection.set("scm:git:ssh://git@github.com/wgtunnel/core.git")
-                url.set("https://github.com/wgtunnel/core")
+        }
+        developers {
+            developer {
+                id = "zaneschepke"
+                name = "Zane Schepke"
+                url = "https://zaneschepke.com"
+                email = "dev@zaneschepke.com"
             }
+        }
+        scm {
+            connection.set("scm:git:git://github.com/wgtunnel/core.git")
+            developerConnection.set("scm:git:ssh://git@github.com/wgtunnel/core.git")
+            url.set("https://github.com/wgtunnel/core")
         }
     }
 }

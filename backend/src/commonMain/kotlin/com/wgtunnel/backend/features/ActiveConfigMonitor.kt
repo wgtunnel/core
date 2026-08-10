@@ -2,8 +2,8 @@ package com.wgtunnel.backend.features
 
 import co.touchlab.kermit.Logger
 import com.wgtunnel.parser.ActiveConfig
-import kotlinx.coroutines.*
 import kotlin.time.Duration
+import kotlinx.coroutines.*
 
 internal class ActiveConfigMonitor(
     private val tunnelId: Int,
@@ -12,6 +12,7 @@ internal class ActiveConfigMonitor(
 ) {
 
     val log = Logger.withTag("ActiveConfigMonitor")
+
     interface Host {
         suspend fun getActiveConfig(): ActiveConfig?
 

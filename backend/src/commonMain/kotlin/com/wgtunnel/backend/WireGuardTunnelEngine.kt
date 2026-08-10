@@ -13,12 +13,10 @@ import com.wgtunnel.backend.util.parseDnsServersOnly
 import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.Config
 import com.wgtunnel.parser.PeerSection
-import kotlinx.serialization.json.Json
 import java.util.UUID
+import kotlinx.serialization.json.Json
 
-internal class WireGuardTunnelEngine(
-    private val runtimeManager: RuntimeManager,
-) : TunnelEngine {
+internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager) : TunnelEngine {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -42,7 +40,7 @@ internal class WireGuardTunnelEngine(
                             mode.config.parseDnsServersOnly().map { DnsHostUtils.ensurePort53(it) }
                         if (servers.isEmpty()) {
                             throw BackendException.ConfigMissingDNS(
-                                "Kill switch requires at least one DNS server in the tunnel config",
+                                "Kill switch requires at least one DNS server in the tunnel config"
                             )
                         }
                         TunnelDnsConfig(defaultTransport = "plain", upstream = servers)
@@ -50,7 +48,9 @@ internal class WireGuardTunnelEngine(
                         null
                     }
                 }
-        val dnsJson = runtimeDnsConfig?.let { json.encodeToString(TunnelDnsConfig.serializer(), it) }
+        val dnsJson = runtimeDnsConfig?.let {
+            json.encodeToString(TunnelDnsConfig.serializer(), it)
+        }
 
         val handle =
             when (mode) {
@@ -103,8 +103,7 @@ internal class WireGuardTunnelEngine(
         when (mode) {
             is BackendMode.Proxy ->
                 ProxyBackend.updateProxyTunnelPeers(handle, config.asQuickString())
-            is BackendMode.Vpn ->
-                VpnBackend.updateTunnelPeers(handle, config.asQuickString())
+            is BackendMode.Vpn -> VpnBackend.updateTunnelPeers(handle, config.asQuickString())
         }
     }
 
@@ -123,7 +122,7 @@ internal class WireGuardTunnelEngine(
             is BackendMode.Vpn -> VpnBackend.turnOff(handle)
             is BackendMode.Proxy.KillSwitchPrimary -> {
                 ProxyBackend.turnProxyTunnelOff(handle)
-                runtimeManager.ensureVpnReady().stopHevSocks5Bridge()
+                runtimeManager.getOrCreateVpnRuntime().stopHevSocks5Bridge()
             }
         }
     }
@@ -133,10 +132,10 @@ internal class WireGuardTunnelEngine(
         config: Config,
         dnsConfigJson: String?,
     ): Int {
-        val vpn = runtimeManager.ensureVpnReady()
+        val vpn = runtimeManager.getOrCreateVpnRuntime()
         return if (runtimeManager.vpnUsesOsTunFd) {
             val fd =
-                runtimeManager.ensureVpnReady().detachVpnTunnelFd()
+                runtimeManager.getOrCreateVpnRuntime().detachVpnTunnelFd()
                     ?: throw BackendException.Unauthorized("Failed to create tun interface")
             val handle =
                 VpnBackend.turnOn(
@@ -144,7 +143,7 @@ internal class WireGuardTunnelEngine(
                     fd,
                     config.asQuickString(),
                     dnsConfigJson,
-                    runtimeManager.uapiPath
+                    runtimeManager.uapiPath,
                 )
             if (handle < 0) {
                 throw BackendException.InternalError("Internal native error with code: $handle")
@@ -157,7 +156,7 @@ internal class WireGuardTunnelEngine(
                     -1, // no-op for desktop
                     config.asQuickString(),
                     dnsConfigJson,
-                    runtimeManager.uapiPath
+                    runtimeManager.uapiPath,
                 )
             if (handle < 0) {
                 throw BackendException.InternalError("Internal native error with code: $handle")
@@ -192,7 +191,7 @@ internal class WireGuardTunnelEngine(
             val pass =
                 proxyConfig.socks5.password
                     ?: throw BackendException.InternalError("Bridge pass not set")
-            runtimeManager.ensureVpnReady().startHevSocks5Bridge(port, pass)
+            runtimeManager.getOrCreateVpnRuntime().startHevSocks5Bridge(port, pass)
         }
         return handle
     }
@@ -204,7 +203,7 @@ internal class WireGuardTunnelEngine(
                     port = PortUtils.getAvailableTcpPort(VpnRuntime.HEV_BRIDGE_TRAFFIC_TAG),
                     username = LOCKDOWN_USERNAME,
                     password = UUID.randomUUID().toString(),
-                ),
+                )
         )
 
     private fun buildProxiedQuickString(config: Config, proxyConfig: ProxyConfig): String =

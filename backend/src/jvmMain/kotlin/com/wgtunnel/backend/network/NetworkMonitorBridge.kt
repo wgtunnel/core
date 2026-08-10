@@ -24,16 +24,17 @@ internal object NetworkMonitorBridge {
     val info: StateFlow<NetworkInfoDto> = _info.asStateFlow()
 
     fun onNativeInfo(raw: String) {
-        _info.value = runCatching { json.decodeFromString<NetworkInfoDto>(raw) }
-            .getOrElse { NetworkInfoDto() }
+        _info.value =
+            runCatching { json.decodeFromString<NetworkInfoDto>(raw) }
+                .getOrElse { NetworkInfoDto() }
     }
 
     fun start(): Boolean = NetworkMonitorNative.start() >= 0
 
     fun stop() = NetworkMonitorNative.stop()
 
-    fun current(): NetworkInfoDto =
-        runCatching {
-            json.decodeFromString<NetworkInfoDto>(NetworkMonitorNative.getInfoJson())
-        }.getOrElse { NetworkInfoDto() }
+    fun current(): NetworkInfoDto = runCatching {
+        json.decodeFromString<NetworkInfoDto>(NetworkMonitorNative.getInfoJson())
+    }
+        .getOrElse { NetworkInfoDto() }
 }

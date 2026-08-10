@@ -16,5 +16,6 @@ interface AndroidApplicationProvider : ApplicationProvider {
     fun createVpnConfigurePendingIntent(context: Context): PendingIntent
 
     suspend fun buildVpnPersistentNotification(status: BackendStatus): Notification
+
     suspend fun buildProxyPersistentNotification(status: BackendStatus): Notification
 }

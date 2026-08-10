@@ -8,7 +8,8 @@ import com.wgtunnel.backend.ApplicationProvider
 actual class PowerManager actual constructor(applicationProvider: ApplicationProvider) {
 
     private val context = (applicationProvider as AndroidApplicationProvider).context
-    actual fun isDeviceAwake() : Boolean {
+
+    actual fun isDeviceAwake(): Boolean {
         val pm = context.getSystemService<PowerManager>() ?: return true
         // screen on / device interactive
         if (!pm.isInteractive) return false

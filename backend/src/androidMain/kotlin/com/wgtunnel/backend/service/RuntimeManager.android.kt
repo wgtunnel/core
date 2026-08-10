@@ -7,6 +7,7 @@ import com.wgtunnel.backend.ApplicationProvider
 import com.wgtunnel.backend.BypassSocket
 import com.wgtunnel.backend.exception.BackendException
 import com.wgtunnel.backend.model.KillSwitchConfig
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,11 +17,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.time.Duration.Companion.milliseconds
 
-actual class RuntimeManager actual constructor(
-    applicationProvider: ApplicationProvider
-) {
+actual class RuntimeManager actual constructor(applicationProvider: ApplicationProvider) {
 
     private val log = Logger.withTag("AndroidServiceManager")
 
@@ -68,7 +66,7 @@ actual class RuntimeManager actual constructor(
         _companionService.value = null
     }
 
-    actual suspend fun ensureVpnReady(): VpnRuntime {
+    actual suspend fun getOrCreateVpnRuntime(): VpnRuntime {
         // companion is required for foreground notification
         getCompanionService()
         val vpnService = getVpnService()
@@ -78,12 +76,14 @@ actual class RuntimeManager actual constructor(
         return vpnService
     }
 
-    actual suspend fun getTunnelService(): TunnelRuntime {
+    actual suspend fun getOrCreateTunnelRuntime(): TunnelRuntime {
         return getTunnelServiceInternal()
     }
 
-    actual suspend fun stopVpnService() {
+    suspend fun stopVpnService() {
         val service = _vpnService.value ?: return
+        // don't shut down the vpn if we have kill switch active
+        if (service.isKillSwitchActive) return
         try {
             service.shutdown()
             withTimeoutOrNull(SERVICE_SHUTDOWN_TIMEOUT_MILLIS.milliseconds) {
@@ -94,7 +94,7 @@ actual class RuntimeManager actual constructor(
         }
     }
 
-    actual suspend fun stopTunnelService() {
+    actual suspend fun destroyTunnelRuntime() {
         val service = _tunnelService.value ?: return
         try {
             service.shutdown()
@@ -106,7 +106,7 @@ actual class RuntimeManager actual constructor(
         }
     }
 
-    actual suspend fun stopCompanionService() {
+    suspend fun stopCompanionService() {
         val service = _companionService.value ?: return
         try {
             service.shutdown()
@@ -118,7 +118,7 @@ actual class RuntimeManager actual constructor(
         }
     }
 
-    actual suspend fun ensureVpnShutdown() {
+    actual suspend fun destroyVpnRuntime(tunnelIds: List<Int>) {
         stopVpnService()
         stopCompanionService()
     }

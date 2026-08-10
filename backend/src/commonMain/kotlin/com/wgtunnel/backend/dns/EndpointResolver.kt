@@ -9,11 +9,11 @@ import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.model.dns.TunnelDnsConfig
 import com.wgtunnel.backend.system.NetworkMonitor
 import com.wgtunnel.backend.util.PublicKey
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
-import kotlin.time.Duration.Companion.milliseconds
 
 internal class EndpointResolver(
     private val networkMonitor: NetworkMonitor,
@@ -23,6 +23,7 @@ internal class EndpointResolver(
     private val createCustomResolver: (DnsBoostrapConfig, bypassNeeded: Boolean) -> PeerResolver,
 ) {
     val log = Logger.withTag("EndpointResolver")
+
     suspend fun resolve(
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig? = null,
@@ -50,11 +51,11 @@ internal class EndpointResolver(
             val dnsMode = getDnsMode()
             val bypassNeeded = mode is BackendMode.Vpn || isKillSwitchEnabled()
 
-            val resolver: PeerResolver = when (dnsMode) {
-                is DnsBoostrapMode.System -> systemDns
-                is DnsBoostrapMode.Custom ->
-                    createCustomResolver(dnsMode.config, bypassNeeded)
-            }
+            val resolver: PeerResolver =
+                when (dnsMode) {
+                    is DnsBoostrapMode.System -> systemDns
+                    is DnsBoostrapMode.Custom -> createCustomResolver(dnsMode.config, bypassNeeded)
+                }
 
             var progressed = false
 
@@ -86,7 +87,7 @@ internal class EndpointResolver(
 
             val peersDone =
                 peersToResolve.isEmpty() ||
-                        peerResults.keys.containsAll(peersToResolve.map { it.publicKey })
+                    peerResults.keys.containsAll(peersToResolve.map { it.publicKey })
             val dnsDone = !dnsNeedsResolve || resolvedDns != null
 
             if (peersDone && dnsDone) {

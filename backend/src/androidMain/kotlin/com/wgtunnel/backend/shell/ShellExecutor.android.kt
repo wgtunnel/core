@@ -2,7 +2,6 @@ package com.wgtunnel.backend.shell
 
 import co.touchlab.kermit.Logger
 import com.topjohnwu.superuser.Shell
-import com.wgtunnel.backend.shell.ShellResult
 
 actual class ShellExecutor {
 
@@ -20,11 +19,11 @@ actual class ShellExecutor {
             throw e
         }
     }
+
     actual companion object {
         private val log = Logger.withTag("ShellExecutor")
 
-        actual fun hasPrivilegedAccess(): Boolean =
-            Shell.isAppGrantedRoot() == true
+        actual fun hasPrivilegedAccess(): Boolean = Shell.isAppGrantedRoot() == true
 
         actual fun requestPrivilegedAccess(): Boolean =
             try {

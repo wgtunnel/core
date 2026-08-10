@@ -13,7 +13,8 @@ data class BackendStatus(
             Triple(
                 tunnel.transportState,
                 tunnel.bootstrapState,
-                tunnel.mode is BackendMode.Vpn || tunnel.mode is BackendMode.Proxy.KillSwitchPrimary,
+                tunnel.mode is BackendMode.Vpn ||
+                    tunnel.mode is BackendMode.Proxy.KillSwitchPrimary,
             )
         } to (activeTunnels.keys to (killSwitch.enabled to dnsMode))
 }

@@ -5,7 +5,9 @@ import com.wgtunnel.parser.Config
 
 interface VpnRuntime {
     suspend fun createTunInterface(tunnel: Tunnel, config: Config, fakeDns: Boolean)
+
     fun detachVpnTunnelFd(): Int?
+
     fun startHevSocks5Bridge(port: Int, password: String)
 
     fun stopHevSocks5Bridge()

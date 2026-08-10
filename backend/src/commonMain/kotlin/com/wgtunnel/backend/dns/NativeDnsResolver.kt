@@ -2,16 +2,16 @@ package com.wgtunnel.backend.dns
 
 import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 @OptIn(ExperimentalAtomicApi::class)
 internal object NativeDnsResolver {
@@ -67,17 +67,17 @@ internal object NativeDnsResolver {
         if (raw.startsWith("ERR|")) throw RuntimeException(raw.removePrefix("ERR|"))
         val parts = raw.split(";")
         val v4 =
-            parts.firstOrNull { it.startsWith("v4=") }
+            parts
+                .firstOrNull { it.startsWith("v4=") }
                 ?.removePrefix("v4=")
                 ?.takeIf { it.isNotBlank() }
-                ?.split(",")
-                ?: emptyList()
+                ?.split(",") ?: emptyList()
         val v6 =
-            parts.firstOrNull { it.startsWith("v6=") }
+            parts
+                .firstOrNull { it.startsWith("v6=") }
                 ?.removePrefix("v6=")
                 ?.takeIf { it.isNotBlank() }
-                ?.split(",")
-                ?: emptyList()
+                ?.split(",") ?: emptyList()
         return DnsBootstrapResult(ipv4 = v4, ipv6 = v6)
     }
 

@@ -12,18 +12,19 @@ data class BootstrapResolution(
         currentEndpoints: Map<PublicKey, String?> = emptyMap(),
         familyOverride: FamilyOverride = FamilyOverride.MatchCurrent,
     ): Map<PublicKey, ResolvedHost> =
-        peerKeyResults.mapNotNull { (pubKey, result) ->
-            // Prefer IP4P if present
-            val ip4p = result.ipv6.firstNotNullOfOrNull { DnsHostUtils.decodeIp4p(it) }
-            if (ip4p != null) {
-                val (ipv4, port) = ip4p
-                return@mapNotNull pubKey to ResolvedHost(host = ipv4, forcedPort = port)
-            }
+        peerKeyResults
+            .mapNotNull { (pubKey, result) ->
+                // Prefer IP4P if present
+                val ip4p = result.ipv6.firstNotNullOfOrNull { DnsHostUtils.decodeIp4p(it) }
+                if (ip4p != null) {
+                    val (ipv4, port) = ip4p
+                    return@mapNotNull pubKey to ResolvedHost(host = ipv4, forcedPort = port)
+                }
 
-            val host =
-                result.selectHostForPeer(currentEndpoints[pubKey], familyOverride)
-                    ?: return@mapNotNull null
-            pubKey to ResolvedHost(host = host)
-        }
+                val host =
+                    result.selectHostForPeer(currentEndpoints[pubKey], familyOverride)
+                        ?: return@mapNotNull null
+                pubKey to ResolvedHost(host = host)
+            }
             .toMap()
 }

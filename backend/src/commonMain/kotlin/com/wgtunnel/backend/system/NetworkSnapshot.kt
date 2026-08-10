@@ -5,5 +5,5 @@ expect class NetworkSnapshot {
     val hasIpv6: Boolean
     val isUsable: Boolean
 
-    fun hasNetwork() : Boolean
+    fun hasNetwork(): Boolean
 }

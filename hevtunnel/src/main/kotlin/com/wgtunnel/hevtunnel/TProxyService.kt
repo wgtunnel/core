@@ -13,8 +13,11 @@ object TProxyService {
     }
 
     @JvmStatic external fun TProxyStartService(config_path: String?, fd: Int): Boolean
+
     @JvmStatic external fun TProxyStopService(): Boolean
+
     @JvmStatic external fun TProxyIsRunning(): Boolean
+
     @JvmStatic external fun TProxyGetStats(): LongArray?
 
     @Throws(IOException::class)

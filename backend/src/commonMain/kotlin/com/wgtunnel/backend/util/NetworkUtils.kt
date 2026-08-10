@@ -12,8 +12,9 @@ object NetworkUtils {
         val rawAddress = if (slash >= 0) network.substring(0, slash).trim() else network
         val rawMask = if (slash >= 0) network.substring(slash + 1).trim() else null
 
-        val addr = IPAddressString(rawAddress).address
-            ?: throw IllegalArgumentException("Invalid address: $rawAddress")
+        val addr =
+            IPAddressString(rawAddress).address
+                ?: throw IllegalArgumentException("Invalid address: $rawAddress")
 
         val max = if (addr.isIPv4) 32 else 128
         val mask = rawMask?.toIntOrNull() ?: max
@@ -41,5 +42,4 @@ object NetworkUtils {
         }
         return DnsConfig(servers, domains)
     }
-
 }

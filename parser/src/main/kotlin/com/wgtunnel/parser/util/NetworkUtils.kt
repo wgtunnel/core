@@ -2,10 +2,10 @@ package com.wgtunnel.parser.util
 
 import com.wgtunnel.parser.ConfigParseException
 import com.wgtunnel.parser.ErrorType
-import java.net.InetAddress
-import org.apache.commons.validator.routines.InetAddressValidator
 import java.net.Inet4Address
+import java.net.InetAddress
 import kotlin.io.encoding.Base64
+import org.apache.commons.validator.routines.InetAddressValidator
 
 object NetworkUtils {
 

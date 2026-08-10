@@ -4,18 +4,19 @@ import com.wgtunnel.backend.ApplicationProvider
 import com.wgtunnel.backend.model.KillSwitchConfig
 
 expect class RuntimeManager(applicationProvider: ApplicationProvider) {
-    suspend fun ensureVpnReady(): VpnRuntime
-    suspend fun getTunnelService(): TunnelRuntime
-    suspend fun stopVpnService()
-    suspend fun stopTunnelService()
-    suspend fun stopCompanionService()
-    suspend fun ensureVpnShutdown()
+    suspend fun getOrCreateVpnRuntime(): VpnRuntime
+
+    suspend fun getOrCreateTunnelRuntime(): TunnelRuntime
+
+    suspend fun destroyTunnelRuntime()
+
+    suspend fun destroyVpnRuntime(tunnelIds: List<Int>)
 
     // null to disable
     suspend fun setKillSwitch(config: KillSwitchConfig?)
 
-    suspend fun isKillSwitchEnabled() : Boolean
+    suspend fun isKillSwitchEnabled(): Boolean
 
-    val vpnUsesOsTunFd : Boolean
+    val vpnUsesOsTunFd: Boolean
     val uapiPath: String
 }

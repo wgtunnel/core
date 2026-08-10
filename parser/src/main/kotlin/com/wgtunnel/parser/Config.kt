@@ -27,14 +27,13 @@ data class Config(
         peers.forEachIndexed { index, peer -> peer.validate(index) }
     }
 
-    fun asQuickString(): String =
-        buildString {
-                name?.let { appendLine("# Name = $it") }
-                headerComments.forEach { appendLine(it) }
-                ConfigFormatter.appendInterfaceSection(this, `interface`)
-                peers.forEach { ConfigFormatter.appendPeerSection(this, it) }
-            }
-            .trim()
+    fun asQuickString(): String = buildString {
+        name?.let { appendLine("# Name = $it") }
+        headerComments.forEach { appendLine(it) }
+        ConfigFormatter.appendInterfaceSection(this, `interface`)
+        peers.forEach { ConfigFormatter.appendPeerSection(this, it) }
+    }
+        .trim()
 
     fun rotateInterfaceKey(): Config {
         val privateKey = Key.generatePrivateKey()

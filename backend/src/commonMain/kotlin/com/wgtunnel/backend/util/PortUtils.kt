@@ -1,12 +1,12 @@
 package com.wgtunnel.backend.util
 
 import com.wgtunnel.backend.exception.BackendException
-import kotlinx.coroutines.delay
 import java.io.IOException
 import java.net.DatagramSocket
 import java.net.ServerSocket
 import java.net.SocketException
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.delay
 
 object PortUtils {
 
@@ -21,9 +21,7 @@ object PortUtils {
 
     @Throws(IOException::class)
     fun getAvailableTcpPort(tag: Int = 0): Int =
-        withSocketTag(tag) {
-            ServerSocket(0).use { it.localPort }
-        }
+        withSocketTag(tag) { ServerSocket(0).use { it.localPort } }
 
     @Throws(BackendException::class)
     suspend fun waitForUdpPortAvailable(port: Int, timeoutMs: Long = 3000L) {

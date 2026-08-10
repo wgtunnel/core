@@ -15,6 +15,9 @@ import com.wgtunnel.backend.util.findEndpointMismatches
 import com.wgtunnel.backend.util.hasIpv6Peers
 import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.PeerSection
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -23,9 +26,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.time.Duration
 
 internal class TunnelRecovery(
     private val powerManager: PowerManager,
@@ -120,7 +120,7 @@ internal class TunnelRecovery(
         val freshBootstrapResolution =
             host.resolveFresh()
                 ?: run {
-                    log.w {"DDNS Recovery: DNS resolution failed for peers" }
+                    log.w { "DDNS Recovery: DNS resolution failed for peers" }
                     return
                 }
 
@@ -162,7 +162,7 @@ internal class TunnelRecovery(
 
         if (mismatches.isEmpty()) return
 
-        log.i {"Ipv4 Fallback: performing IPv4 fallback peer update for tunnel $tunnelId" }
+        log.i { "Ipv4 Fallback: performing IPv4 fallback peer update for tunnel $tunnelId" }
         val resolved = mode.config.buildResolvedPeers(mismatches)
         host.updatePeers(resolved)
         host.emit(TunnelEvent.FallbackToIpv4(tunnelId))
@@ -212,7 +212,7 @@ internal class TunnelRecovery(
                     )
                 if (mismatches.isEmpty()) return@collectLatest
 
-                log.i {"Ipv6 Recovery: tunnel $tunnelId upgrading to IPv6" }
+                log.i { "Ipv6 Recovery: tunnel $tunnelId upgrading to IPv6" }
                 val resolved = mode.config.buildResolvedPeers(mismatches)
                 host.updatePeers(resolved)
                 host.emit(TunnelEvent.RecoveredToIpv6(tunnelId))

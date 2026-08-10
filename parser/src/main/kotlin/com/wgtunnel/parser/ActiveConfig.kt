@@ -7,12 +7,11 @@ import kotlinx.serialization.Serializable
 data class ActiveConfig(val interfaceSection: InterfaceSection, val peers: List<ActivePeer>) {
 
     // user readable active config in ini format
-    fun asQuickString(): String =
-        buildString {
-                ConfigFormatter.appendInterfaceSection(this, interfaceSection)
-                peers.forEach { ConfigFormatter.appendActivePeerSection(this, it) }
-            }
-            .trim()
+    fun asQuickString(): String = buildString {
+        ConfigFormatter.appendInterfaceSection(this, interfaceSection)
+        peers.forEach { ConfigFormatter.appendActivePeerSection(this, it) }
+    }
+        .trim()
 
     companion object {
         fun parseFromIpc(ipcString: String): ActiveConfig {

@@ -29,6 +29,9 @@ import com.wgtunnel.backend.util.rebuildModeWithHostMap
 import com.wgtunnel.backend.util.withEndpointsFrom
 import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.PeerSection
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,14 +54,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 class TunnelBackend(
     private val scope: CoroutineScope,
     override val applicationProvider: ApplicationProvider,
-    private val networkMonitor: NetworkMonitor
+    private val networkMonitor: NetworkMonitor,
 ) : Backend, TunnelStatusCallback {
 
     private val log = Logger.withTag("TunnelBackend")
@@ -96,9 +96,8 @@ class TunnelBackend(
             isKillSwitchEnabled = { _status.value.killSwitch.enabled },
             createCustomResolver = { config, bypass ->
                 CustomDnsResolver(config, bypass, systemDnsResolver)
-            }
+            },
         )
-
 
     override fun onStatus(handle: Int, code: Int) {
         val state = Tunnel.State.fromNative(code) ?: return
@@ -217,7 +216,7 @@ class TunnelBackend(
             engine.getActiveConfig(handle, mode)
                 ?: run {
                     log.w {
-                    "Unable to get active config for ${tunnel.name} for bounce, stopping bounce"
+                        "Unable to get active config for ${tunnel.name} for bounce, stopping bounce"
                     }
                     return false
                 }
@@ -242,7 +241,7 @@ class TunnelBackend(
                     endpointResolver.resolve(mode, tunnelDnsConfig)
                 }
             } catch (_: TimeoutCancellationException) {
-                log.w {"Bounce DNS timed out for tunnel ${tunnel.name}, bounce failed" }
+                log.w { "Bounce DNS timed out for tunnel ${tunnel.name}, bounce failed" }
                 return false
             }
 
@@ -335,14 +334,14 @@ class TunnelBackend(
     ) {
         when (mode) {
             is BackendMode.Proxy.KillSwitchPrimary -> {
-                runtimeManager.ensureVpnReady()
+                runtimeManager.getOrCreateVpnRuntime()
                 runtimeManager.setKillSwitch(mode.killSwitchConfig)
             }
             is BackendMode.Proxy.Standard -> {
-                runtimeManager.getTunnelService()
+                runtimeManager.getOrCreateTunnelRuntime()
             }
             is BackendMode.Vpn -> {
-                val vpn = runtimeManager.ensureVpnReady()
+                val vpn = runtimeManager.getOrCreateVpnRuntime()
                 vpn.createTunInterface(tunnel, mode.config, fakeDns)
             }
         }
@@ -377,10 +376,10 @@ class TunnelBackend(
         byTunnelId.remove(tunnelId)
 
         if (vpnTypeCount == 1 && !_status.value.killSwitch.enabled) {
-            runtimeManager.ensureVpnShutdown()
+            runtimeManager.destroyVpnRuntime(listOf(tunnelId))
         }
         if (proxyTypeCount == 1) {
-            runtimeManager.stopTunnelService()
+            runtimeManager.destroyTunnelRuntime()
         }
     }
 
@@ -435,20 +434,19 @@ class TunnelBackend(
 
     override suspend fun setKillSwitch(config: KillSwitchConfig) = runCatching {
         runtimeManager.setKillSwitch(config)
-        _status.update {
-            it.copy(killSwitch = it.killSwitch.copy(enabled = true, config = config))
-        }
+        _status.update { it.copy(killSwitch = it.killSwitch.copy(enabled = true, config = config)) }
     }
 
     override suspend fun disableKillSwitch() = runCatching {
         runtimeManager.setKillSwitch(null)
         _status.update {
             it.copy(
-                killSwitch = KillSwitchState(
-                    enabled = false,
-                    config = null,
-                    primaryTunnel = it.killSwitch.primaryTunnel,
-                ),
+                killSwitch =
+                    KillSwitchState(
+                        enabled = false,
+                        config = null,
+                        primaryTunnel = it.killSwitch.primaryTunnel,
+                    )
             )
         }
     }
@@ -459,13 +457,14 @@ class TunnelBackend(
     }
 
     override suspend fun stopAllActiveTunnels() = tunnelMutex.withLock {
+        val vpnIds =
+            _status.value.activeTunnels
+                .filter { it.value.mode is BackendMode.Vpn }
+                .mapNotNull { it.value.tunnel?.id }
         _status.value.activeTunnels.forEach { (id, tunnel) -> stopTunnelInternal(id, tunnel) }
         applicationProvider.refreshStatusUi()
-        runtimeManager.stopTunnelService()
-        if (!_status.value.killSwitch.enabled) {
-            runtimeManager.stopVpnService()
-            runtimeManager.stopCompanionService()
-        }
+        runtimeManager.destroyTunnelRuntime()
+        runtimeManager.destroyVpnRuntime(vpnIds)
         Result.success(Unit)
     }
 
@@ -551,13 +550,13 @@ class TunnelBackend(
                                                 feature.dynamicDnsRecovery && hasDynamicEndpoints,
                                             ipv6Recovery =
                                                 hasDynamicEndpoints &&
-                                                        (tunnel.ipStrategy
-                                                                as? Tunnel.IpStrategy.PreferIpv6)
-                                                            ?.recoveryEnabled ?: false,
+                                                    (tunnel.ipStrategy
+                                                            as? Tunnel.IpStrategy.PreferIpv6)
+                                                        ?.recoveryEnabled ?: false,
                                             ipv4Fallback =
                                                 hasDynamicEndpoints &&
-                                                        tunnel.ipStrategy is
-                                                                Tunnel.IpStrategy.PreferIpv6,
+                                                    tunnel.ipStrategy is
+                                                        Tunnel.IpStrategy.PreferIpv6,
                                         ),
                                     failureThreshold = TUNNEL_FAILURE_THRESHOLD_MILLIS.milliseconds,
                                     stabilizeWindow =
@@ -566,22 +565,21 @@ class TunnelBackend(
                                         object : TunnelRecovery.Host {
                                             override fun observe(): Flow<TunnelRecovery.Snapshot> =
                                                 combine(
-                                                    status.mapNotNull {
-                                                        it.activeTunnels[tunnel.id]
-                                                    },
-                                                    networkMonitor.networkState
-                                                        .filterNotNull(),
-                                                ) { active, network ->
-                                                    TunnelRecovery.Snapshot(
-                                                        transportState = active.transportState,
-                                                        lastResolvedPeers =
-                                                            active.lastBootstrapResolution
-                                                                ?.peerKeyResults,
-                                                        networkUsable = network.isUsable,
-                                                        networkHasIpv6 = network.hasIpv6,
-                                                        activeNetworkKey = network.key,
-                                                    )
-                                                }
+                                                        status.mapNotNull {
+                                                            it.activeTunnels[tunnel.id]
+                                                        },
+                                                        networkMonitor.networkState.filterNotNull(),
+                                                    ) { active, network ->
+                                                        TunnelRecovery.Snapshot(
+                                                            transportState = active.transportState,
+                                                            lastResolvedPeers =
+                                                                active.lastBootstrapResolution
+                                                                    ?.peerKeyResults,
+                                                            networkUsable = network.isUsable,
+                                                            networkHasIpv6 = network.hasIpv6,
+                                                            activeNetworkKey = network.key,
+                                                        )
+                                                    }
                                                     .distinctUntilChanged()
 
                                             override suspend fun getActiveConfig(): ActiveConfig? {
@@ -590,7 +588,7 @@ class TunnelBackend(
                                             }
 
                                             override suspend fun resolveFresh():
-                                                    BootstrapResolution? {
+                                                BootstrapResolution? {
                                                 val active =
                                                     _status.value.activeTunnels[tunnel.id]
                                                         ?: return null

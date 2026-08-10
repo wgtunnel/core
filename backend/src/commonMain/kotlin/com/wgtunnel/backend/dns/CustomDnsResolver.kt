@@ -5,10 +5,7 @@ import com.wgtunnel.backend.model.dns.DnsBoostrapConfig
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.util.DnsHostUtils
 
-/**
- * Upstream resolved by system, then native
- * DoH/DoT/plain via native.
- */
+/** Upstream resolved by system, then native DoH/DoT/plain via native. */
 class CustomDnsResolver(
     private val dnsConfig: DnsBoostrapConfig,
     private val bypass: Boolean,
@@ -53,9 +50,7 @@ class CustomDnsResolver(
                 bypass = bypass,
             )
         } catch (e: Exception) {
-            log.w(e) {
-                "Custom DNS resolution failed for host=$host upstreams=$resolvedUpstreams"
-            }
+            log.w(e) { "Custom DNS resolution failed for host=$host upstreams=$resolvedUpstreams" }
             DnsBootstrapResult()
         }
     }

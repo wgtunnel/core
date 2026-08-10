@@ -5,8 +5,7 @@ sealed class ShellException(
     override val cause: Throwable? = null,
 ) : Exception(message, cause) {
 
-    class NoAccess :
-        ShellException("Root access is not granted. Please grant root permissions.")
+    class NoAccess : ShellException("Root access is not granted. Please grant root permissions.")
 
     class CommandFailed(val command: String, val exitCode: Int, val stderr: String? = null) :
         ShellException(

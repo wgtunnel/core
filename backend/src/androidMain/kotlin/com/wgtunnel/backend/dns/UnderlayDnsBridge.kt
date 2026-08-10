@@ -18,8 +18,7 @@ internal object UnderlayDnsBridge {
     @OptIn(ExperimentalAtomicApi::class)
     private val underlayNetwork = AtomicReference<Network?>(null)
 
-    @JvmStatic
-    private external fun setUnderlayNetworkHandleNative(handle: Long)
+    @JvmStatic private external fun setUnderlayNetworkHandleNative(handle: Long)
 
     fun setUnderlayNetwork(network: Network?) {
         underlayNetwork.store(network)
@@ -34,10 +33,12 @@ internal object UnderlayDnsBridge {
     @Keep
     @JvmStatic
     fun lookupOnUnderlayNetwork(host: String, networkFamily: String): String {
-        val network = underlayNetwork.load() ?: run {
-            log.w { "lookupOnUnderlayNetwork: no underlay for $host" }
-            return ""
-        }
+        val network =
+            underlayNetwork.load()
+                ?: run {
+                    log.w { "lookupOnUnderlayNetwork: no underlay for $host" }
+                    return ""
+                }
         return try {
             val addrs = network.getAllByName(host)
             val filtered =

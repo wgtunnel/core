@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.AndroidApplicationProvider
 import com.wgtunnel.backend.BackendRuntime
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -16,15 +17,20 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.milliseconds
 
 internal class TunnelService : LifecycleService(), TunnelRuntime {
 
     val log = Logger.withTag("TunnelService")
 
-    private val serviceManager get() = BackendRuntime.requireManager()
-    private val backend get() = BackendRuntime.requireBackend()
-    private val provider get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
+    private val serviceManager
+        get() = BackendRuntime.requireManager()
+
+    private val backend
+        get() = BackendRuntime.requireBackend()
+
+    private val provider
+        get() = BackendRuntime.requireProvider() as AndroidApplicationProvider
+
     private val shutdownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val notificationManager: NotificationManager by lazy {
@@ -45,11 +51,8 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
         serviceManager.set(this)
 
         // Service restarted by system, reuse always-on VPN callback
-        if (
-            intent?.component == null ||
-            (intent.component!!.packageName != packageName)
-        ) {
-            log.d {"TunnelService started by system" }
+        if (intent?.component == null || (intent.component!!.packageName != packageName)) {
+            log.d { "TunnelService started by system" }
             RuntimeManager.alwaysOnCallback?.alwaysOnTriggered()
         }
 
@@ -65,8 +68,7 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
                 .distinctUntilChangedBy { it.toNotificationComparisonKey() }
                 .debounce(700.milliseconds)
                 .collect { status ->
-                    val notification =
-                        provider.buildProxyPersistentNotification(status)
+                    val notification = provider.buildProxyPersistentNotification(status)
                     notificationManager.notify(
                         provider.proxyNotificationId,
                         notification,

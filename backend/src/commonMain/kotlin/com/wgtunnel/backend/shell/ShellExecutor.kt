@@ -6,6 +6,7 @@ expect class ShellExecutor() {
     companion object {
         // Android only, desktop no-op
         fun requestPrivilegedAccess(): Boolean
+
         fun hasPrivilegedAccess(): Boolean
     }
 }
