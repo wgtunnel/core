@@ -1,7 +1,6 @@
 package com.wgtunnel.backend.dns
 
 import android.net.Network
-import androidx.annotation.Keep
 import co.touchlab.kermit.Logger
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -10,7 +9,6 @@ import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 @OptIn(ExperimentalAtomicApi::class)
-@Keep
 internal object UnderlayDnsBridge {
     private val log = Logger.withTag("UnderlayDnsBridge")
     private val underlayNetworkHandle = AtomicLong(0L)
@@ -30,7 +28,6 @@ internal object UnderlayDnsBridge {
         }
     }
 
-    @Keep
     @JvmStatic
     fun lookupOnUnderlayNetwork(host: String, networkFamily: String): String {
         val network =

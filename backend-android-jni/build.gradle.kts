@@ -1,9 +1,11 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.vanniktech.mavenPublish)
+    signing
 }
 
 android {
-    namespace = "com.wgtunnel.backend.android"
+    namespace = "com.wgtunnel.backend.android.jni"
     compileSdk {
         version = release(libs.versions.android.compileSdk.get().toInt())
     }
@@ -11,6 +13,9 @@ android {
     ndkVersion = libs.versions.android.ndk.get()
 
     defaultConfig {
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+        }
         minSdk = libs.versions.android.minSdk.get().toInt()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -62,3 +67,11 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
+
+tasks.named<Delete>("clean") {
+    delete(layout.projectDirectory.dir("src/main/jniLibs"))
+    delete(layout.projectDirectory.dir(".cxx"))
+}
+
+
+

@@ -126,10 +126,9 @@ func createInterface(ifName string, config string) int32 {
 
 //export destroyInterface
 func destroyInterface(ifName string) {
-	iface := C.GoString(ifName)
 	pendingMu.Lock()
-	p := pendingByIface[iface]
-	delete(pendingByIface, iface)
+	p := pendingByIface[ifName]
+	delete(pendingByIface, ifName)
 	pendingMu.Unlock()
 	if p == nil {
 		return
@@ -140,7 +139,7 @@ func destroyInterface(ifName string) {
 	if p.tun != nil {
 		_ = p.tun.Close()
 	}
-	log.Debug(tag, "VPN interface %s destroyed", iface)
+	log.Debug(tag, "VPN interface %s destroyed", ifName)
 }
 
 // takePending transfers TUN ownership to caller
@@ -189,7 +188,7 @@ func startVpn(
 	desktopMu.Lock()
 	desktopExtras[id] = &desktopTunnelExtras{router: rt}
 	desktopMu.Unlock()
-	return C.int(id)
+	return id
 }
 
 // called from shared awgTurnOff after device close

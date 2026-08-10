@@ -10,11 +10,12 @@ plugins {
 }
 
 val jvmVersion = libs.versions.jvm.get().toInt()
-version = libs.versions.lib.get()
+val libVersion = libs.versions.lib.get()
+version = libVersion
 
 allprojects {
     group = "com.wgtunnel"
-    version = version
+    version = libVersion
     plugins.withId("org.jetbrains.kotlin.jvm") {
         extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
             jvmToolchain(jvmVersion)

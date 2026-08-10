@@ -6,26 +6,6 @@ import java.util.concurrent.TimeUnit
 actual class ShellExecutor {
     private val log = Logger.withTag("ShellExecutor")
 
-    actual fun hasPrivilegedAccess(): Boolean {
-        val os = System.getProperty("os.name").lowercase()
-        return if (os.contains("win")) {
-            // Service/daemon assumed elevated; refine with a real admin check if needed
-            true
-        } else {
-            try {
-                val p = ProcessBuilder("id", "-u").redirectErrorStream(true).start()
-                val uid = p.inputStream.bufferedReader().readText().trim()
-                p.waitFor(2, TimeUnit.SECONDS)
-                uid == "0"
-            } catch (e: Exception) {
-                log.w(e) { "Failed to check uid" }
-                false
-            }
-        }
-    }
-
-    actual fun requestPrivilegedAccess(): Boolean = hasPrivilegedAccess()
-
     actual fun run(command: String): ShellResult {
         val os = System.getProperty("os.name").lowercase()
         val process =
@@ -49,5 +29,12 @@ actual class ShellExecutor {
 
         log.d { "Shell exit=$code cmd=$command" }
         return ShellResult(code = code, stdout = stdout, stderr = stderr)
+    }
+
+    actual companion object {
+        // Assumes desktop is running as a root/admin daemon/service
+        actual fun hasPrivilegedAccess(): Boolean = true
+
+        actual fun requestPrivilegedAccess(): Boolean = true
     }
 }

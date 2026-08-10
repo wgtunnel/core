@@ -21,8 +21,6 @@ android {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
             ndkBuild {
                 arguments.add("APP_CFLAGS+=-DPKGNAME=com/wgtunnel/hevtunnel -ffile-prefix-map=${rootDir}=.")

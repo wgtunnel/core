@@ -1,6 +1,8 @@
 package com.wgtunnel.backend.system
 
-actual class PowerManager {
+import com.wgtunnel.backend.ApplicationProvider
+
+actual class PowerManager actual constructor(applicationProvider: ApplicationProvider) {
     actual fun isDeviceAwake(): Boolean {
         // TODO fix with actual power manager detection for desktop
         return true

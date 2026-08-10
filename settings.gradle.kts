@@ -22,5 +22,5 @@ rootProject.name = "core"
 include(":backend")
 include(":hevtunnel")
 include(":parser")
-include(":backend-android")
+include(":backend-android-jni")
  

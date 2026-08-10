@@ -1,21 +1,27 @@
--keep class com.wgtunnel.tunnel.backend.VpnBackend { *; }
--keep class com.wgtunnel.tunnel.backend.ProxyBackend { *; }
-
--keepclasseswithmembernames class * {
+-keepclasseswithmembernames class com.wgtunnel.backend.** {
     native <methods>;
 }
 
-# Callbacks called from native to Kotlin
--keep class com.wgtunnel.tunnel.backend.NativeTunnelCallback { *; }
--keepclassmembers class * implements com.wgtunnel.tunnel.backend.NativeTunnelCallback {
-    <methods>;
-}
-
--keepclassmembers,includedescriptorclasses class com.wgtunnel.tunnel.backend.TunnelStatusBridge {
-    public static void onStatusChanged(int, int);
-}
-
--keep class com.wgtunnel.tunnel.backend.BypassSocket { *; }
--keepclassmembers class com.wgtunnel.tunnel.backend.BypassSocket {
+-keepclassmembers class com.wgtunnel.backend.dns.NativeDnsResolver {
     native <methods>;
+}
+
+-keepclassmembers class com.wgtunnel.backend.dns.UnderlayDnsBridge {
+    public static <methods>;
+}
+-keepclassmembers class com.wgtunnel.backend.network.NetworkMonitorNative {
+    public static <methods>;
+}
+# Interfaces invoked from native
+-keep interface com.wgtunnel.backend.TunnelStatusCallback {
+    void onStatus(int, int);
+}
+-keep class * implements com.wgtunnel.backend.TunnelStatusCallback {
+    void onStatus(int, int);
+}
+-keep interface com.wgtunnel.backend.SocketProtector {
+    int bypass(int);
+}
+-keep class * implements com.wgtunnel.backend.SocketProtector {
+    int bypass(int);
 }

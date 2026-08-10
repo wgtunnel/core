@@ -324,9 +324,9 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         vpnTunFd = null
     }
 
-    override fun startHevSocks5Bridge(port: Int, pass: String) {
+    override fun startHevSocks5Bridge(port: Int, password: String) {
         if (hevBridgeJob != null) return
-        hevBridgeJob = startHevBridge(port, pass)
+        hevBridgeJob = startHevBridge(port, password)
     }
 
     override fun stopHevSocks5Bridge() {

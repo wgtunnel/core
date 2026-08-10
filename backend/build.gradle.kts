@@ -3,9 +3,8 @@ plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library)
     alias(libs.plugins.vanniktech.mavenPublish)
     alias(libs.plugins.kotlinxSerialization)
+    signing
 }
-
-group = "com.wgtunnel"
 
 kotlin {
     jvm()
@@ -30,10 +29,20 @@ kotlin {
 
     }
 
+    targets.configureEach {
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    freeCompilerArgs.add("-Xexpect-actual-classes")
+                }
+            }
+        }
+    }
+
     sourceSets {
         androidMain.dependencies {
             implementation(project(":hevtunnel"))
-            implementation(project(":backend-android"))
+            implementation(project(":backend-android-jni"))
             implementation(libs.androidx.lifecycle.service)
             implementation(libs.libsu)
             implementation(libs.androidx.appcompat)
@@ -58,7 +67,18 @@ kotlin {
     }
 }
 
+signing {
+    val inMemoryKey = providers.gradleProperty("signing.inMemoryKey")
+    val password = providers.gradleProperty("signing.password")
+    useInMemoryPgpKeys(
+        inMemoryKey.get(),
+        password.orNull.orEmpty(),
+    )
+}
+
 mavenPublishing {
+    publishToMavenCentral()
+    signAllPublications()
     coordinates(group.toString(), "backend", version.toString())
     pom {
         name = "WG Tunnel Backend"
@@ -81,7 +101,7 @@ mavenPublishing {
             developer {
                 id = "zaneschepke"
                 name = "Zane Schepke"
-                url = "https://zaneschepke.com"
+                url = "https://github.com/zaneschepke"
                 email = "dev@zaneschepke.com"
             }
         }
