@@ -541,7 +541,6 @@ class TunnelBackend(
                             val hasDynamicEndpoints = mode.config.hasDynamicEndpoints()
                             val recovery =
                                 TunnelRecovery(
-                                    powerManager = powerManager,
                                     tunnelId = tunnel.id,
                                     mode = mode,
                                     recovery =
@@ -558,9 +557,11 @@ class TunnelBackend(
                                                     tunnel.ipStrategy is
                                                         Tunnel.IpStrategy.PreferIpv6,
                                         ),
-                                    failureThreshold = TUNNEL_FAILURE_THRESHOLD_MILLIS.milliseconds,
+                                    failureThreshold =
+                                        TunnelRecovery.TUNNEL_FAILURE_THRESHOLD_MILLIS.milliseconds,
                                     stabilizeWindow =
-                                        TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS.milliseconds,
+                                        TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
+                                            .milliseconds,
                                     host =
                                         object : TunnelRecovery.Host {
                                             override fun observe(): Flow<TunnelRecovery.Snapshot> =
@@ -569,15 +570,19 @@ class TunnelBackend(
                                                             it.activeTunnels[tunnel.id]
                                                         },
                                                         networkMonitor.networkState.filterNotNull(),
-                                                    ) { active, network ->
+                                                        powerManager.deviceAwake,
+                                                    ) { active, network, awake ->
                                                         TunnelRecovery.Snapshot(
-                                                            transportState = active.transportState,
+                                                            shouldRecoveryBeActive =
+                                                                active.shouldRecoveryBeActive(
+                                                                    network.isUsable
+                                                                ),
                                                             lastResolvedPeers =
                                                                 active.lastBootstrapResolution
                                                                     ?.peerKeyResults,
-                                                            networkUsable = network.isUsable,
                                                             networkHasIpv6 = network.hasIpv6,
                                                             activeNetworkKey = network.key,
+                                                            deviceAwake = awake,
                                                         )
                                                     }
                                                     .distinctUntilChanged()
@@ -649,9 +654,4 @@ class TunnelBackend(
     }
 
     external fun setStatusCallback(tunnelStatusCallback: TunnelStatusCallback?)
-
-    companion object {
-        private const val TUNNEL_FAILURE_THRESHOLD_MILLIS = 30_000L
-        private const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 12_000L
-    }
 }

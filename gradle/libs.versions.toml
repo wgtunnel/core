@@ -5,7 +5,7 @@ android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.0.2"
+lib = "1.0.3"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.11.0"
  # Corutines
@@ -27,7 +27,6 @@ commonsValidator = "1.11.0"
 # Android
 lifecycle-runtime-compose = "2.11.0"
 libsu = "6.0.0"
-backend-android = "1.0.1"
 
 # Desktop
 jetbrainsKotlinJvm = "2.4.10"
@@ -53,7 +52,6 @@ logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "lo
 
 # Corutines
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
-wgtunnel-backend-android = { module = "com.wgtunnel:backend-android", version.ref = "backend-android" }
 
 # Util
 ipaddress = { module = "com.github.seancfoley:ipaddress", version.ref = "ipaddress" }

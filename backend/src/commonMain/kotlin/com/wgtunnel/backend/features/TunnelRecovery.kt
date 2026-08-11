@@ -8,7 +8,6 @@ import com.wgtunnel.backend.model.BackendMode
 import com.wgtunnel.backend.model.dns.BootstrapResolution
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.state.ActiveTunnel
-import com.wgtunnel.backend.system.PowerManager
 import com.wgtunnel.backend.util.PublicKey
 import com.wgtunnel.backend.util.buildResolvedPeers
 import com.wgtunnel.backend.util.findEndpointMismatches
@@ -20,15 +19,13 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 internal class TunnelRecovery(
-    private val powerManager: PowerManager,
     private val tunnelId: Int,
     private val mode: BackendMode,
     private val recovery: Tunnel.Feature.Recovery,
@@ -59,11 +56,11 @@ internal class TunnelRecovery(
     }
 
     data class Snapshot(
-        val transportState: Tunnel.State?,
+        val shouldRecoveryBeActive: Boolean,
         val lastResolvedPeers: Map<PublicKey, DnsBootstrapResult>?,
-        val networkUsable: Boolean,
         val networkHasIpv6: Boolean,
         val activeNetworkKey: String?,
+        val deviceAwake: Boolean,
     )
 
     fun start(scope: CoroutineScope): Job = scope.launch {
@@ -82,38 +79,58 @@ internal class TunnelRecovery(
 
         launch {
             host.observe().collectLatest { snap ->
-                if (!isFailing(snap)) return@collectLatest
+                log.d { "Running with state $snap" }
+                if (!snap.shouldRecoveryBeActive) return@collectLatest
 
-                // try DDNS recovery first if tunnel is a DDNS tunnel
-                if (recovery.dynamicDnsRecovery) {
-                    delay(stabilizeWindow)
-                    tryDynamicDnsRecovery()
-                }
-
-                // try IPv4 fallback when applicable
+                // gate
                 if (
-                    recovery.ipv4Fallback &&
-                        snap.activeNetworkKey != null &&
-                        snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
-                ) {
-                    delay(stabilizeWindow)
-                    tryLightIpv4Fallback(snap)
-                }
+                    !recovery.dynamicDnsRecovery &&
+                        !recovery.seamlessRecovery &&
+                        !recovery.ipv4Fallback
+                )
+                    return@collectLatest
 
-                // Still failing, we do a full tunnel bounce
-                if (!recovery.seamlessRecovery) return@collectLatest
-                // Gate feature to only fire when device is not asleep and is interactive
-                if (!powerManager.isDeviceAwake()) return@collectLatest
-                delay(failureThreshold)
-                // Still interactive after delay
-                if (!powerManager.isDeviceAwake()) return@collectLatest
-                tryFullTunnelBounce()
+                var seamlessRecoveryAttempted = 0
+
+                while (isActive) {
+
+                    // wait for initial stabilization
+                    delay(stabilizeWindow)
+
+                    // try DDNS recovery first if tunnel is a DDNS tunnel
+                    if (recovery.dynamicDnsRecovery) {
+                        tryDynamicDnsRecovery()
+                        delay(stabilizeWindow)
+                    }
+
+                    // try IPv4 fallback when applicable
+                    if (
+                        recovery.ipv4Fallback &&
+                            snap.activeNetworkKey != null &&
+                            snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
+                    ) {
+                        tryLightIpv4Fallback(snap)
+                        delay(stabilizeWindow)
+                    }
+
+                    // Still failing, we do a full tunnel bounce
+                    if (
+                        recovery.seamlessRecovery &&
+                            snap.deviceAwake &&
+                            seamlessRecoveryAttempted <= MAX_SEAMLESS_RECOVERY_RETRIES
+                    ) {
+                        // assumes failure threshold is always larger than stabilization window
+                        delay(failureThreshold)
+                        tryFullTunnelBounce()
+                        seamlessRecoveryAttempted++
+                        log.d {
+                            "Tunnel tunnel bounce attempt $seamlessRecoveryAttempted of $MAX_SEAMLESS_RECOVERY_RETRIES"
+                        }
+                    }
+                }
             }
         }
     }
-
-    private fun isFailing(snap: Snapshot): Boolean =
-        snap.transportState is Tunnel.State.Up.HandshakeFailure && snap.networkUsable
 
     private suspend fun tryDynamicDnsRecovery() {
         log.i { "DDNS  Recovery: attempting dynamic DNS recovery for tunnel $tunnelId" }
@@ -170,18 +187,16 @@ internal class TunnelRecovery(
 
     // Full bounce now only does a fresh DNS request if tunnel is a DDNS tunnel
     private suspend fun tryFullTunnelBounce() {
-        withContext(NonCancellable) {
-            log.i {
-                "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=${recovery.dynamicDnsRecovery})"
-            }
-            val didBounce = host.bounce(withFreshResolution = recovery.dynamicDnsRecovery)
-            if (didBounce) {
-                host.updateActiveTunnel {
-                    it.copy(
-                        recoveryAttempts = it.recoveryAttempts + 1,
-                        lastRecoveryAttemptMs = System.currentTimeMillis(),
-                    )
-                }
+        log.i {
+            "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=${recovery.dynamicDnsRecovery})"
+        }
+        val didBounce = host.bounce(withFreshResolution = recovery.dynamicDnsRecovery)
+        if (didBounce) {
+            host.updateActiveTunnel {
+                it.copy(
+                    recoveryAttempts = it.recoveryAttempts + 1,
+                    lastRecoveryAttemptMs = System.currentTimeMillis(),
+                )
             }
         }
     }
@@ -190,7 +205,8 @@ internal class TunnelRecovery(
     private fun isIpv6Recoverable(snap: Snapshot): Boolean {
         val key = snap.activeNetworkKey
         return snap.networkHasIpv6 &&
-            snap.transportState is Tunnel.State.Up.Healthy &&
+            // ipv6 recovery runs on the inverse condition of the failure recovery job
+            !snap.shouldRecoveryBeActive &&
             key != null &&
             key != lastIpv4FallbackNetworkKey.load()
     }
@@ -218,5 +234,11 @@ internal class TunnelRecovery(
                 host.emit(TunnelEvent.RecoveredToIpv6(tunnelId))
             }
         }
+    }
+
+    companion object {
+        const val TUNNEL_FAILURE_THRESHOLD_MILLIS = 30_000L
+        const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 12_000L
+        const val MAX_SEAMLESS_RECOVERY_RETRIES = 8
     }
 }
