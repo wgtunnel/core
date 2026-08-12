@@ -13,13 +13,13 @@ kotlinx-coroutines = "1.11.0"
 ktfmt = "0.27.0"
 
 # Logging
-logbackClassic = "1.6.1"
+logbackClassic = "1.6.2"
 kermit = "2.1.0"
 
 # Util
 ipaddress = "5.6.2"
 cryptoRand = "0.6.0"
-bc = "1.85"
+bc = "1.85.2"
 humanReadable = "1.13.1"
 datetime = "0.8.0"
 commonsValidator = "1.11.0"
