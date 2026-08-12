@@ -21,31 +21,21 @@ actual class PowerManager actual constructor(applicationProvider: ApplicationPro
     private val powerManager: AndroidPowerManager =
         context.getSystemService(Context.POWER_SERVICE) as AndroidPowerManager
 
-    actual fun isDeviceAwake(): Boolean {
-        // screen on / device interactive
-        if (!powerManager.isInteractive) return false
-        // deep idle
-        if (powerManager.isDeviceIdleMode) return false
-        return true
-    }
+    /** Whether the device is free enough for full tunnel bounce (only when not in doze mode) */
+    actual fun isDeviceAwake(): Boolean = !powerManager.isDeviceIdleMode
 
     actual val deviceAwake: Flow<Boolean> = callbackFlow {
-        // Init state
-        trySend(powerManager.isInteractive)
+        trySend(isDeviceAwake())
 
         val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
-                    // Re-query instead of trusting the action string
-                    trySend(powerManager.isInteractive)
+                    trySend(isDeviceAwake())
                 }
             }
 
         val filter =
-            IntentFilter().apply {
-                addAction(Intent.ACTION_SCREEN_ON)
-                addAction(Intent.ACTION_SCREEN_OFF)
-            }
+            IntentFilter().apply { addAction(AndroidPowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED) }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)

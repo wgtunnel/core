@@ -50,8 +50,8 @@ interface Tunnel {
          * All recovery behaviour for this tunnel.
          *
          * @param seamlessRecovery full tunnel bounce after sustained HandshakeFailure, maintaining
-         *   the current config and respecting phone idle/interactive states to prevent fale
-         *   positives
+         *   the current config and skipping deep device idle / Doze to prevent false positives
+         *   (screen-off is allowed so background traffic can recover)
          * @param dynamicDnsRecovery performs a fresh resolve bypassing the tunnel and updating the
          *   peers
          * @param ipv6Recovery based on IPStrategy settings. Attempts to recovery to IPv6 endpoints

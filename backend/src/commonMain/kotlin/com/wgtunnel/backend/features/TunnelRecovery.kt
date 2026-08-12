@@ -19,11 +19,16 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal class TunnelRecovery(
     private val tunnelId: Int,
@@ -57,6 +62,7 @@ internal class TunnelRecovery(
 
     data class Snapshot(
         val shouldRecoveryBeActive: Boolean,
+        val bootstrapPending: Boolean,
         val lastResolvedPeers: Map<PublicKey, DnsBootstrapResult>?,
         val networkHasIpv6: Boolean,
         val activeNetworkKey: String?,
@@ -76,34 +82,86 @@ internal class TunnelRecovery(
 
     @OptIn(ExperimentalAtomicApi::class)
     private fun CoroutineScope.runFailureRecovery() {
-
         launch {
-            host.observe().collectLatest { snap ->
-                log.d { "Running with state $snap" }
-                if (!snap.shouldRecoveryBeActive) return@collectLatest
+            if (
+                !recovery.dynamicDnsRecovery && !recovery.seamlessRecovery && !recovery.ipv4Fallback
+            ) {
+                return@launch
+            }
 
-                // gate
-                if (
-                    !recovery.dynamicDnsRecovery &&
-                        !recovery.seamlessRecovery &&
-                        !recovery.ipv4Fallback
-                )
-                    return@collectLatest
+            val snapshots =
+                host
+                    .observe()
+                    .stateIn(
+                        scope = this,
+                        started = SharingStarted.Eagerly,
+                        initialValue =
+                            Snapshot(
+                                shouldRecoveryBeActive = false,
+                                bootstrapPending = false,
+                                lastResolvedPeers = null,
+                                networkHasIpv6 = false,
+                                activeNetworkKey = null,
+                                deviceAwake = false,
+                            ),
+                    )
 
-                var seamlessRecoveryAttempted = 0
+            // Log snapshot changes
+            launch { snapshots.collect { snap -> log.d { "Running with state $snap" } } }
 
-                while (isActive) {
+            var seamlessRecoveryAttempted = 0
+            // Track idle to active so leaving Doze refreshes the bounce counter as it is a common
+            // source of tunnel failures
+            var wasDeviceAwake = snapshots.value.deviceAwake
 
-                    // wait for initial stabilization
+            fun noteDeviceAwake(snap: Snapshot) {
+                if (snap.deviceAwake && !wasDeviceAwake) {
+                    if (seamlessRecoveryAttempted != 0) {
+                        log.d {
+                            "Recovery: left device idle, resetting bounce attempts for tunnel $tunnelId (was $seamlessRecoveryAttempted)"
+                        }
+                    }
+                    seamlessRecoveryAttempted = 0
+                }
+                wasDeviceAwake = snap.deviceAwake
+            }
+
+            while (isActive) {
+                // Wait for first failure state
+                snapshots.first { it.shouldRecoveryBeActive }
+                log.d { "Recovery episode started for tunnel $tunnelId" }
+                noteDeviceAwake(snapshots.value)
+
+                while (isActive && snapshots.value.shouldRecoveryBeActive) {
+                    noteDeviceAwake(snapshots.value)
+
+                    // Bootstrap in flight, wait until it is completed while keeping the session
+                    // active
+                    if (snapshots.value.bootstrapPending) {
+                        log.d { "Recovery: waiting for bootstrap to finish for tunnel $tunnelId" }
+                        snapshots.first { !it.bootstrapPending || !it.shouldRecoveryBeActive }
+                        noteDeviceAwake(snapshots.value)
+                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        // Bootstrap finished while still unhealthy, fall through to a fresh
+                        // stabilize window before we act
+                    }
+
                     delay(stabilizeWindow)
 
-                    // try DDNS recovery first if tunnel is a DDNS tunnel
+                    // recheck state
+                    noteDeviceAwake(snapshots.value)
+                    if (!snapshots.value.shouldRecoveryBeActive) break
+                    if (snapshots.value.bootstrapPending) continue
+
                     if (recovery.dynamicDnsRecovery) {
                         tryDynamicDnsRecovery()
                         delay(stabilizeWindow)
+                        noteDeviceAwake(snapshots.value)
+                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        if (snapshots.value.bootstrapPending) continue
                     }
 
-                    // try IPv4 fallback when applicable
+                    val snap = snapshots.value
                     if (
                         recovery.ipv4Fallback &&
                             snap.activeNetworkKey != null &&
@@ -111,23 +169,44 @@ internal class TunnelRecovery(
                     ) {
                         tryLightIpv4Fallback(snap)
                         delay(stabilizeWindow)
+                        noteDeviceAwake(snapshots.value)
+                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        if (snapshots.value.bootstrapPending) continue
                     }
 
-                    // Still failing, we do a full tunnel bounce
+                    val beforeBounce = snapshots.value
+                    noteDeviceAwake(beforeBounce)
                     if (
                         recovery.seamlessRecovery &&
-                            snap.deviceAwake &&
-                            seamlessRecoveryAttempted <= MAX_SEAMLESS_RECOVERY_RETRIES
+                            beforeBounce.deviceAwake &&
+                            !beforeBounce.bootstrapPending &&
+                            seamlessRecoveryAttempted < MAX_SEAMLESS_RECOVERY_RETRIES
                     ) {
-                        // assumes failure threshold is always larger than stabilization window
                         delay(failureThreshold)
+                        val ready = snapshots.value
+                        noteDeviceAwake(ready)
+                        if (!ready.shouldRecoveryBeActive) break
+                        // No full bounce while in Doze or when bootstrap is in flight
+                        if (!ready.deviceAwake || ready.bootstrapPending) continue
+
                         tryFullTunnelBounce()
                         seamlessRecoveryAttempted++
                         log.d {
-                            "Tunnel tunnel bounce attempt $seamlessRecoveryAttempted of $MAX_SEAMLESS_RECOVERY_RETRIES"
+                            "Tunnel bounce attempt $seamlessRecoveryAttempted of $MAX_SEAMLESS_RECOVERY_RETRIES"
                         }
+                    } else {
+                        // Seamless disabled, in Doze, bootstrap pending, or max retries
+                        delay(stabilizeWindow)
                     }
                 }
+
+                // Healthy
+                if (seamlessRecoveryAttempted != 0) {
+                    log.d {
+                        "Recovery episode ended for tunnel $tunnelId (attempts=$seamlessRecoveryAttempted)"
+                    }
+                }
+                seamlessRecoveryAttempted = 0
             }
         }
     }
@@ -185,21 +264,23 @@ internal class TunnelRecovery(
         host.emit(TunnelEvent.FallbackToIpv4(tunnelId))
     }
 
-    // Full bounce now only does a fresh DNS request if tunnel is a DDNS tunnel
-    private suspend fun tryFullTunnelBounce() {
-        log.i {
-            "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=${recovery.dynamicDnsRecovery})"
-        }
-        val didBounce = host.bounce(withFreshResolution = recovery.dynamicDnsRecovery)
-        if (didBounce) {
-            host.updateActiveTunnel {
-                it.copy(
-                    recoveryAttempts = it.recoveryAttempts + 1,
-                    lastRecoveryAttemptMs = System.currentTimeMillis(),
-                )
+    // Full bounce now only does a fresh DNS request if tunnel is a DDNS tunnel.
+    // NonCancellable so becoming Healthy mid-bounce cannot abort stop/start half-way.
+    private suspend fun tryFullTunnelBounce() =
+        withContext(NonCancellable) {
+            log.i {
+                "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=${recovery.dynamicDnsRecovery})"
+            }
+            val didBounce = host.bounce(withFreshResolution = recovery.dynamicDnsRecovery)
+            if (didBounce) {
+                host.updateActiveTunnel {
+                    it.copy(
+                        recoveryAttempts = it.recoveryAttempts + 1,
+                        lastRecoveryAttemptMs = System.currentTimeMillis(),
+                    )
+                }
             }
         }
-    }
 
     @OptIn(ExperimentalAtomicApi::class)
     private fun isIpv6Recoverable(snap: Snapshot): Boolean {
@@ -237,8 +318,15 @@ internal class TunnelRecovery(
     }
 
     companion object {
-        const val TUNNEL_FAILURE_THRESHOLD_MILLIS = 30_000L
-        const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 12_000L
+        /**
+         * Extra wait after a stabilize window before a full bounce, so failure is sustained beyond
+         * a single WireGuard handshake/keepalive cycle
+         */
+        const val TUNNEL_FAILURE_THRESHOLD_MILLIS = 15_000L
+
+        /** Quiet period after becoming unhealthy to give tunnel time to stabilize */
+        const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 8_000L
+
         const val MAX_SEAMLESS_RECOVERY_RETRIES = 8
     }
 }

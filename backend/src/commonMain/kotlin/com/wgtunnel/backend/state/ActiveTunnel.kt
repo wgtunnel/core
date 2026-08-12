@@ -24,20 +24,9 @@ data class ActiveTunnel(
         return lastBootstrapResolution?.resolvedTunnelDnsConfig ?: tunnelDnsConfig
     }
 
-    // helper to know if recovery job should remain active
-    // We consider states that would be caused by an active bounce or failure as recovery should be
-    // active
+    /** Whether a tunnel recovery episode should stay active. */
     fun shouldRecoveryBeActive(hasUsableNetwork: Boolean): Boolean {
-        val hasRecoveryTransportState =
-            when (transportState) {
-                Tunnel.State.Down,
-                Tunnel.State.Starting,
-                Tunnel.State.Stopping,
-                Tunnel.State.Up.HandshakeFailure -> true
-                Tunnel.State.Up.Healthy -> false
-            }
-        return hasRecoveryTransportState &&
-            bootstrapState !is BootstrapState.ResolvingDns &&
-            hasUsableNetwork
+        if (!hasUsableNetwork) return false
+        return transportState !is Tunnel.State.Up.Healthy
     }
 }

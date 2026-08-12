@@ -81,6 +81,12 @@ class TunnelBackend(
     private val byTunnelId = ConcurrentHashMap<Int, Int>()
     private val pendingResolutionJobs = ConcurrentHashMap<Int, Job>()
 
+    /**
+     * Native status can fire before onEngineResult maps the handle and native won't emit duplicated
+     * so we buffer the latest status per handle and apply it as soon as the handle is registered.
+     */
+    private val pendingStatusByHandle = ConcurrentHashMap<Int, Tunnel.State>()
+
     init {
         System.loadLibrary("am-go")
         BackendRuntime.install(runtimeManager, this, applicationProvider)
@@ -101,7 +107,35 @@ class TunnelBackend(
 
     override fun onStatus(handle: Int, code: Int) {
         val state = Tunnel.State.fromNative(code) ?: return
-        val tunnelId = byHandle[handle] ?: return
+        val tunnelId = byHandle[handle]
+        if (tunnelId != null) {
+            pendingStatusByHandle.remove(handle)
+            applyTransportState(tunnelId, state)
+            return
+        }
+
+        // For down/stop we always drop any pending for this handle
+        if (state is Tunnel.State.Down) {
+            pendingStatusByHandle.remove(handle)
+            return
+        }
+
+        // For an unmapped non-Down status, we only buffer if a tunnel is still waiting for handle
+        val awaitingHandle =
+            _status.value.activeTunnels.any { (_, t) -> t.transportState is Tunnel.State.Starting }
+        if (!awaitingHandle) {
+            pendingStatusByHandle.remove(handle)
+            return
+        }
+
+        pendingStatusByHandle[handle] = state
+
+        // Handle may have been registered between the null check and the store.
+        val registeredId = byHandle[handle] ?: return
+        pendingStatusByHandle.remove(handle)?.let { applyTransportState(registeredId, it) }
+    }
+
+    private fun applyTransportState(tunnelId: Int, state: Tunnel.State) {
         val current = _status.value.activeTunnels[tunnelId]?.transportState
         if (current != state) {
             updateTunnelTransportState(tunnelId, state)
@@ -352,6 +386,7 @@ class TunnelBackend(
         byTunnelId[tunnelId]?.let { oldHandle ->
             if (oldHandle != result.handle) {
                 byHandle.remove(oldHandle)
+                pendingStatusByHandle.remove(oldHandle)
             }
         }
         updateActiveTunnel(tunnelId) {
@@ -359,6 +394,12 @@ class TunnelBackend(
         }
         byHandle[result.handle] = tunnelId
         byTunnelId[tunnelId] = result.handle
+
+        // Apply any status that arrived before the handle was mapped (common when handshake
+        // completes during native start, before we return to Kotlin).
+        pendingStatusByHandle.remove(result.handle)?.let { pending ->
+            applyTransportState(tunnelId, pending)
+        }
     }
 
     private suspend fun cleanup(tunnelId: Int) {
@@ -372,7 +413,10 @@ class TunnelBackend(
         val proxyTypeCount = activeTunnels.values.count { it.mode is BackendMode.Proxy.Standard }
 
         removeActiveTunnel(tunnelId)
-        byTunnelId[tunnelId]?.let { byHandle.remove(it) }
+        byTunnelId[tunnelId]?.let { handle ->
+            byHandle.remove(handle)
+            pendingStatusByHandle.remove(handle)
+        }
         byTunnelId.remove(tunnelId)
 
         if (vpnTypeCount == 1 && !_status.value.killSwitch.enabled) {
@@ -577,6 +621,11 @@ class TunnelBackend(
                                                                 active.shouldRecoveryBeActive(
                                                                     network.isUsable
                                                                 ),
+                                                            bootstrapPending =
+                                                                active.bootstrapState is
+                                                                    BootstrapState.ResolvingDns ||
+                                                                    active.bootstrapState is
+                                                                        BootstrapState.UpdatingPeers,
                                                             lastResolvedPeers =
                                                                 active.lastBootstrapResolution
                                                                     ?.peerKeyResults,

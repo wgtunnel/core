@@ -20,12 +20,21 @@ internal class ActiveConfigMonitor(
     }
 
     fun start(scope: CoroutineScope): Job = scope.launch {
+        var consecutiveMisses = 0
         while (isActive) {
             val config = host.getActiveConfig()
             if (config == null) {
-                log.w { "no handle/config, stopping" }
-                return@launch
+                // During bounce/restart we don't tear down monitor
+                consecutiveMisses++
+                if (consecutiveMisses == 1 || consecutiveMisses % 10 == 0) {
+                    log.w {
+                        "no handle/config for tunnel $tunnelId (miss $consecutiveMisses), retrying"
+                    }
+                }
+                delay(interval)
+                continue
             }
+            consecutiveMisses = 0
             host.updateActiveConfig(config)
             delay(interval)
         }
