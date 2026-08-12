@@ -36,6 +36,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
@@ -176,8 +178,7 @@ class TunnelBackend(
                 pendingResolutionJobs[tunnel.id] =
                     startTunnelBootstrapJob(tunnel, mode, tunnelDnsConfig)
             } else {
-                val result = engine.start(tunnel.id, mode, tunnelDnsConfig)
-                onEngineStartResult(tunnel.id, result)
+                startEngineAndRegister(tunnel.id, mode, tunnelDnsConfig)
                 if (scriptsEnabled) {
                     mode.config.`interface`.postUp?.let { runScripts(it, tunnel.id) }
                 }
@@ -186,6 +187,22 @@ class TunnelBackend(
         }
             .onFailure { cleanup(tunnel.id) }
     }
+
+    /**
+     * Engine start needs to not outlive Kotlin handle tracking. If a bootstrap job is canceled
+     * after native start returns but before onEngineStartResult, the UI can clear the tunnel while
+     * tunnel is still running in native so we run as one non-cancellable unit.
+     */
+    private suspend fun startEngineAndRegister(
+        tunnelId: Int,
+        mode: BackendMode,
+        tunnelDnsConfig: TunnelDnsConfig?,
+    ): EngineStartResult =
+        withContext(NonCancellable) {
+            val result = engine.start(tunnelId, mode, tunnelDnsConfig)
+            onEngineStartResult(tunnelId, result)
+            result
+        }
 
     private suspend fun bootstrapAndStart(
         tunnel: Tunnel,
@@ -221,9 +238,7 @@ class TunnelBackend(
         }
 
         // pass our bootstrapped tunnel dns config
-        val result =
-            engine.start(tunnel.id, runtimeMode, bootstrapResolution.resolvedTunnelDnsConfig)
-        onEngineStartResult(tunnel.id, result)
+        startEngineAndRegister(tunnel.id, runtimeMode, bootstrapResolution.resolvedTunnelDnsConfig)
     }
 
     // Should only be called if mode config is static
@@ -234,8 +249,7 @@ class TunnelBackend(
         dns: TunnelDnsConfig?,
     ): Boolean {
         engine.stop(handle, mode)
-        val result = engine.start(tunnel.id, mode, dns)
-        onEngineStartResult(tunnel.id, result)
+        startEngineAndRegister(tunnel.id, mode, dns)
         return true
     }
 
@@ -257,8 +271,7 @@ class TunnelBackend(
 
         val runtimeMode = mode.withEndpointsFrom(activeConfig)
         engine.stop(handle, mode)
-        val result = engine.start(tunnel.id, runtimeMode, tunnelDnsConfig)
-        onEngineStartResult(tunnel.id, result)
+        startEngineAndRegister(tunnel.id, runtimeMode, tunnelDnsConfig)
         return true
     }
 
@@ -305,8 +318,11 @@ class TunnelBackend(
         }
 
         engine.stop(handle, mode)
-        val result = engine.start(tunnel.id, runtimeMode, bootstrapResult.resolvedTunnelDnsConfig)
-        onEngineStartResult(tunnel.id, result)
+        startEngineAndRegister(
+            tunnel.id,
+            runtimeMode,
+            bootstrapResult.resolvedTunnelDnsConfig,
+        )
         return true
     }
 
@@ -341,24 +357,49 @@ class TunnelBackend(
         tunnel: Tunnel,
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig? = null,
-    ) = scope.launch {
-        try {
-            bootstrapAndStart(tunnel, mode, tunnelDnsConfig)
-            val scriptsEnabled = tunnel.scriptsEnabled
-            if (scriptsEnabled) {
-                mode.config.`interface`.postUp?.let { runScripts(it, tunnel.id) }
-            }
+    ): Job {
+        val job = scope.launch {
+            try {
+                bootstrapAndStart(tunnel, mode, tunnelDnsConfig)
+                val scriptsEnabled = tunnel.scriptsEnabled
+                if (scriptsEnabled) {
+                    mode.config.`interface`.postUp?.let { runScripts(it, tunnel.id) }
+                }
 
-            tunnelJobs[tunnel.id] = startTunnelJobs(tunnel, mode)
-        } catch (t: Throwable) {
-            if (t is CancellationException) {
+                tunnelJobs[tunnel.id] = startTunnelJobs(tunnel, mode)
+            } catch (t: CancellationException) {
                 log.d { "Bootstrap job cancelled for tunnel ${tunnel.id}" }
-            } else {
+                // startEngineAndRegister is NonCancellable, a cancel after native start must
+                // still tear the device down
+                withContext(NonCancellable) {
+                    tearDownIfRegistered(tunnel.id, mode)
+                    cleanup(tunnel.id)
+                }
+                throw t
+            } catch (t: Throwable) {
                 log.e(t) { "Tunnel bootstrap failed for ${tunnel.id}" }
-                cleanup(tunnel.id)
+                withContext(NonCancellable) {
+                    tearDownIfRegistered(tunnel.id, mode)
+                    cleanup(tunnel.id)
+                }
+            } finally {
+                pendingResolutionJobs.remove(tunnel.id, coroutineContext.job)
             }
-            if (t is CancellationException) throw t
         }
+        return job
+    }
+
+    /**
+     * Stop native device if this tunnel already has a mapped handle, and drop handle maps. Safe to
+     * call when cleanup has already run.
+     */
+    private suspend fun tearDownIfRegistered(tunnelId: Int, mode: BackendMode) {
+        val handle = byTunnelId[tunnelId] ?: return
+        runCatching { engine.stop(handle, mode) }
+            .onFailure { log.w(it) { "tearDownIfRegistered: engine.stop failed for $tunnelId" } }
+        byHandle.remove(handle)
+        byTunnelId.remove(tunnelId)
+        pendingStatusByHandle.remove(handle)
     }
 
     private suspend fun setupServicesAndProtectorForMode(
@@ -403,17 +444,27 @@ class TunnelBackend(
     }
 
     private suspend fun cleanup(tunnelId: Int) {
+        // Cancel only as cleanup may run from that job
         pendingResolutionJobs.remove(tunnelId)?.cancel()
         tunnelJobs.remove(tunnelId)?.cancel()
 
         val activeTunnels = _status.value.activeTunnels
+        val active = activeTunnels[tunnelId]
+        val mode = active?.mode
 
         val vpnTypeCount = activeTunnels.values.count { it.mode is BackendMode.Vpn }
 
         val proxyTypeCount = activeTunnels.values.count { it.mode is BackendMode.Proxy.Standard }
 
+        // Always stop native if we still have a handle
+        val handle = byTunnelId[tunnelId]
+        if (handle != null && mode != null) {
+            runCatching { engine.stop(handle, mode) }
+                .onFailure { log.w(it) { "cleanup: engine.stop failed for tunnel $tunnelId" } }
+        }
+
         removeActiveTunnel(tunnelId)
-        byTunnelId[tunnelId]?.let { handle ->
+        if (handle != null) {
             byHandle.remove(handle)
             pendingStatusByHandle.remove(handle)
         }
@@ -457,20 +508,37 @@ class TunnelBackend(
     private suspend fun stopTunnelInternal(tunnelId: Int, activeTunnel: ActiveTunnel) {
         updateTunnelTransportState(tunnelId, Tunnel.State.Stopping)
 
-        val handle = byTunnelId[tunnelId]
-
-        if (handle == null) {
-            cleanup(tunnelId)
-            return
+        // Bootstrap runs outside the start() mutex. Cancel and join so
+        // start never maps a handle or startEngineAndRegister finishes and byTunnelId is set so we
+        // can stop engine and prevent orphaned tunnels.
+        val bootstrapJob = pendingResolutionJobs.remove(tunnelId)
+        if (bootstrapJob != null) {
+            bootstrapJob.cancel()
+            bootstrapJob.join()
         }
 
+        val handle = byTunnelId[tunnelId]
+        val mode = activeTunnel.mode ?: _status.value.activeTunnels[tunnelId]?.mode
         val scriptsEnabled = activeTunnel.tunnel?.scriptsEnabled == true
-        val mode = activeTunnel.mode ?: return
 
         try {
-            if (scriptsEnabled) mode.config.`interface`.preDown?.let { runScripts(it, tunnelId) }
-            engine.stop(handle, activeTunnel.mode)
-            if (scriptsEnabled) mode.config.`interface`.postDown?.let { runScripts(it, tunnelId) }
+            if (handle != null && mode != null) {
+                if (scriptsEnabled) {
+                    mode.config.`interface`.preDown?.let { runScripts(it, tunnelId) }
+                }
+                engine.stop(handle, mode)
+                if (scriptsEnabled) {
+                    mode.config.`interface`.postDown?.let { runScripts(it, tunnelId) }
+                }
+            } else if (handle != null) {
+                log.w {
+                    "stopTunnel: handle $handle for tunnel $tunnelId has no mode; cannot engine.stop"
+                }
+            } else {
+                log.d {
+                    "stopTunnel: no native handle for tunnel $tunnelId (start had not registered)"
+                }
+            }
         } finally {
             cleanup(tunnelId)
         }
