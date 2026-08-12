@@ -9,7 +9,7 @@ data class ActivePeer(
     @SerialName("AllowedIPs") val allowedIPs: String? = null,
     @SerialName("Endpoint") val endpoint: String? = null,
     @SerialName("PresharedKey") val presharedKey: String? = null,
-    @SerialName("PersistentKeepalive") val persistentKeepalive: Int? = null,
+    @SerialName("PersistentKeepalive") val persistentKeepalive: String? = null,
     @SerialName("LastHandshakeSeconds") val lastHandshakeSeconds: Long? = null,
     @SerialName("LastHandshakeNanos") val lastHandshakeNanos: Long? = null,
     @SerialName("TxBytes") val txBytes: Long? = null,

@@ -79,6 +79,30 @@ object NetworkUtils {
         }
     }
 
+    /**
+     * AmneziaWG 3.0 range-or-scalar or "(off)" values Used for timings, content padding, and range
+     * PersistentKeepalive.
+     */
+    fun isValidUintRangeOrScalar(value: String): Boolean {
+        val v = value.trim()
+        if (v.isEmpty()) return false
+        if (v.equals("(off)", ignoreCase = true)) return true
+        return try {
+            if (v.contains("-")) {
+                val parts = v.split("-", limit = 2)
+                if (parts.size != 2) return false
+                val start = parts[0].trim().toULong()
+                val end = parts[1].trim().toULong()
+                start <= end
+            } else {
+                v.toULong()
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     @Throws(ConfigParseException::class)
     fun validateAmneziaSignaturePacket(value: String, fieldName: String) {
         if (value.isBlank()) {

@@ -23,7 +23,7 @@ data class InterfaceSection(
     // Android
     @SerialName("IncludedApplications") val includedApplications: List<String>? = null,
     @SerialName("ExcludedApplications") val excludedApplications: List<String>? = null,
-    // Amnezia
+    // AmneziaWG 1.x / 2.x
     @SerialName("Jc") val jC: Int? = null,
     @SerialName("Jmin") val jMin: Int? = null,
     @SerialName("Jmax") val jMax: Int? = null,
@@ -40,6 +40,16 @@ data class InterfaceSection(
     @SerialName("I3") val i3: String? = null,
     @SerialName("I4") val i4: String? = null,
     @SerialName("I5") val i5: String? = null,
+    // AmneziaWG 3.0+
+    // Base64 Curve25519-style key for packet header protection.
+    @SerialName("HeaderProtectionKey") val headerProtectionKey: String? = null,
+    // Scalar or range of extra content padding bytes
+    @SerialName("ContentPaddingAddition") val contentPaddingAddition: String? = null,
+    @SerialName("RekeyAfterTime") val rekeyAfterTime: String? = null,
+    @SerialName("RekeyTimeout") val rekeyTimeout: String? = null,
+    @SerialName("RejectAfterTime") val rejectAfterTime: String? = null,
+    @SerialName("KeepaliveTimeout") val keepaliveTimeout: String? = null,
+    @SerialName("MaxHandshakeAttempts") val maxHandshakeAttempts: String? = null,
     val comments: List<String> = emptyList(),
 ) {
 
@@ -108,6 +118,32 @@ data class InterfaceSection(
                 )
         }
 
+        // Message type sizes must remain distinguishable after S1–S3 padding per Amnezia
+        val initJunk = s1 ?: 0
+        val responseJunk = s2 ?: 0
+        val cookieJunk = s3 ?: 0
+        if (148 + initJunk == 92 + responseJunk) {
+            throw ConfigParseException(
+                ErrorType.INVALID_PADDING_COLLISION,
+                "Interface.S1/S2",
+                "S1 + 148 must not equal S2 + 92",
+            )
+        }
+        if (148 + initJunk == 64 + cookieJunk) {
+            throw ConfigParseException(
+                ErrorType.INVALID_PADDING_COLLISION,
+                "Interface.S1/S3",
+                "S1 + 148 must not equal S3 + 64",
+            )
+        }
+        if (92 + responseJunk == 64 + cookieJunk) {
+            throw ConfigParseException(
+                ErrorType.INVALID_PADDING_COLLISION,
+                "Interface.S2/S3",
+                "S2 + 92 must not equal S3 + 64",
+            )
+        }
+
         listOf(h1, h2, h3, h4).forEachIndexed { i, h ->
             if (h != null && !NetworkUtils.isValidAmneziaHeader(h)) {
                 throw ConfigParseException(
@@ -122,6 +158,60 @@ data class InterfaceSection(
             (sig, shortName) ->
             sig?.let { NetworkUtils.validateAmneziaSignaturePacket(it, "Interface.$shortName") }
         }
+
+        headerProtectionKey?.let { key ->
+            if (!NetworkUtils.isValidBase64(key)) {
+                throw ConfigParseException(
+                    ErrorType.INVALID_BASE64_KEY,
+                    "Interface.HeaderProtectionKey",
+                    key,
+                )
+            }
+            listOf(
+                    s1 to "S1",
+                    s2 to "S2",
+                    s3 to "S3",
+                    s4 to "S4",
+                )
+                .forEach { (value, name) ->
+                    val junk = value ?: 0
+                    if (junk < 12) {
+                        throw ConfigParseException(
+                            ErrorType.INVALID_HEADER_PROTECTION_PADDING,
+                            "Interface.$name",
+                            junk,
+                        )
+                    }
+                }
+        }
+
+        contentPaddingAddition?.let {
+            if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
+                throw ConfigParseException(
+                    ErrorType.INVALID_RANGE_FORMAT,
+                    "Interface.ContentPaddingAddition",
+                    it,
+                )
+            }
+        }
+        listOf(
+                rekeyAfterTime to "RekeyAfterTime",
+                rekeyTimeout to "RekeyTimeout",
+                rejectAfterTime to "RejectAfterTime",
+                keepaliveTimeout to "KeepaliveTimeout",
+                maxHandshakeAttempts to "MaxHandshakeAttempts",
+            )
+            .forEach { (value, name) ->
+                value?.let {
+                    if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
+                        throw ConfigParseException(
+                            ErrorType.INVALID_RANGE_FORMAT,
+                            "Interface.$name",
+                            it,
+                        )
+                    }
+                }
+            }
 
         address
             ?.split(",")

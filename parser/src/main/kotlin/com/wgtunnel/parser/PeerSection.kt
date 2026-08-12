@@ -10,7 +10,8 @@ data class PeerSection(
     @SerialName("AllowedIPs") val allowedIPs: String? = null,
     @SerialName("Endpoint") val endpoint: String? = null,
     @SerialName("PresharedKey") val presharedKey: String? = null,
-    @SerialName("PersistentKeepalive") val persistentKeepalive: Int? = null,
+    // Scalar seconds or Amnezia range so we store as string
+    @SerialName("PersistentKeepalive") val persistentKeepalive: String? = null,
     val comments: List<String> = emptyList(),
 ) {
 
@@ -23,12 +24,13 @@ data class PeerSection(
             throw ConfigParseException(ErrorType.INVALID_BASE64_KEY, "$prefix.PublicKey", publicKey)
 
         persistentKeepalive?.let {
-            if (it !in 0..65535)
+            if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
                 throw ConfigParseException(
                     ErrorType.INVALID_KEEPALIVE_VALUE,
                     "$prefix.PersistentKeepalive",
                     it,
                 )
+            }
         }
 
         endpoint?.let {

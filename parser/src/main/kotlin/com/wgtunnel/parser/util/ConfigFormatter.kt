@@ -32,7 +32,7 @@ object ConfigFormatter {
         iface.table?.let { sb.appendLine("Table = $it") }
         iface.saveConfig?.let { sb.appendLine("SaveConfig = $it") }
 
-        // AmneziaWG
+        // AmneziaWG 1.x / 2.x
         iface.jC?.let { sb.appendLine("Jc = $it") }
         iface.jMin?.let { sb.appendLine("Jmin = $it") }
         iface.jMax?.let { sb.appendLine("Jmax = $it") }
@@ -49,6 +49,14 @@ object ConfigFormatter {
         iface.i3?.let { sb.appendLine("I3 = $it") }
         iface.i4?.let { sb.appendLine("I4 = $it") }
         iface.i5?.let { sb.appendLine("I5 = $it") }
+        // AmneziaWG 3.0+
+        iface.headerProtectionKey?.let { sb.appendLine("HeaderProtectionKey = $it") }
+        iface.contentPaddingAddition?.let { sb.appendLine("ContentPaddingAddition = $it") }
+        iface.rekeyAfterTime?.let { sb.appendLine("RekeyAfterTime = $it") }
+        iface.rekeyTimeout?.let { sb.appendLine("RekeyTimeout = $it") }
+        iface.rejectAfterTime?.let { sb.appendLine("RejectAfterTime = $it") }
+        iface.keepaliveTimeout?.let { sb.appendLine("KeepaliveTimeout = $it") }
+        iface.maxHandshakeAttempts?.let { sb.appendLine("MaxHandshakeAttempts = $it") }
 
         iface.includedApplications
             ?.takeIf { it.isNotEmpty() }
@@ -90,7 +98,7 @@ object ConfigFormatter {
         endpoint: String?,
         allowedIPs: String?,
         presharedKey: String?,
-        persistentKeepalive: Int?,
+        persistentKeepalive: String?,
     ) {
         sb.appendLine("PublicKey = $publicKey")
         endpoint?.let { sb.appendLine("Endpoint = $it") }
@@ -100,9 +108,9 @@ object ConfigFormatter {
         ) {
             sb.appendLine("PresharedKey = $presharedKey")
         }
-        if (persistentKeepalive != null && persistentKeepalive != 0) {
-            sb.appendLine("PersistentKeepalive = $persistentKeepalive")
-        }
+        persistentKeepalive
+            ?.takeIf { it.isNotBlank() && it != "0" }
+            ?.let { sb.appendLine("PersistentKeepalive = $it") }
     }
 
     private fun appendRuntimeStats(sb: StringBuilder, peer: ActivePeer) {

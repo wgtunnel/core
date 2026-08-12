@@ -57,6 +57,21 @@ data class ActiveConfig(val interfaceSection: InterfaceSection, val peers: List<
                         "i3" -> interfaceMap["I3"] = value
                         "i4" -> interfaceMap["I4"] = value
                         "i5" -> interfaceMap["I5"] = value
+                        "header_protection_key" -> {
+                            // UAPI uses hex, conf uses base64
+                            interfaceMap["HeaderProtectionKey"] =
+                                if (value.length == 64 && value.matches(Regex("[0-9a-fA-F]{64}"))) {
+                                    Config.hexToBase64(value)
+                                } else {
+                                    value
+                                }
+                        }
+                        "content_padding_addition" -> interfaceMap["ContentPaddingAddition"] = value
+                        "rekey_after_time" -> interfaceMap["RekeyAfterTime"] = value
+                        "rekey_timeout" -> interfaceMap["RekeyTimeout"] = value
+                        "reject_after_time" -> interfaceMap["RejectAfterTime"] = value
+                        "keepalive_timeout" -> interfaceMap["KeepaliveTimeout"] = value
+                        "max_handshake_attempts" -> interfaceMap["MaxHandshakeAttempts"] = value
 
                         "public_key" -> {
                             currentPeerMap = mutableMapOf<String, String>().also { peerMaps += it }
