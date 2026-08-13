@@ -90,7 +90,7 @@ class TunnelBackend(
     private val pendingStatusByHandle = ConcurrentHashMap<Int, Tunnel.State>()
 
     init {
-        System.loadLibrary("am-go")
+        loadBackendNativeLibrary()
         BackendRuntime.install(runtimeManager, this, applicationProvider)
         setStatusCallback(this)
         UnderlayNetworkSynchronizer(networkMonitor, scope)

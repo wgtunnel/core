@@ -16,9 +16,19 @@ data class NetworkInfoDto(
     val hasIpv4: Boolean = false,
     val hasIpv6: Boolean = false,
     val dnsServers: List<String> = emptyList(),
-)
+) {
+    val isConnected: Boolean
+        get() = type != "disconnected" && type.isNotBlank()
 
-internal object NetworkMonitorBridge {
+    val isUsable: Boolean
+        get() = isConnected && (hasIpv4 || hasIpv6)
+
+    fun snapshotKey(): String {
+        return listOf(type, interfaceName, ifIndex.toString(), ssid, bssid).joinToString("|")
+    }
+}
+
+object NetworkMonitorBridge {
     private val json = Json { ignoreUnknownKeys = true }
     private val _info = MutableStateFlow(NetworkInfoDto())
     val info: StateFlow<NetworkInfoDto> = _info.asStateFlow()

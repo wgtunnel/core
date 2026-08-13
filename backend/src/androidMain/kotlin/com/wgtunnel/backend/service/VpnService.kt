@@ -90,8 +90,10 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
         serviceScope.launch { serviceManager.getCompanionService() }
 
-        // system recovery restart
+        // START_STICKY after the process was killed
         if (intent == null) {
+            log.d { "VpnService restarted by system (sticky)" }
+            RuntimeManager.alwaysOnCallback?.onStickyRestart()
             return START_STICKY
         }
 

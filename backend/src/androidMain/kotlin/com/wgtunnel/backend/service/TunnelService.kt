@@ -50,9 +50,11 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
         super.onStartCommand(intent, flags, startId)
         serviceManager.set(this)
 
-        // Service restarted by system, reuse always-on VPN callback
-        if (intent?.component == null || (intent.component!!.packageName != packageName)) {
-            log.d { "TunnelService started by system" }
+        if (intent == null) {
+            log.d { "TunnelService restarted by system (sticky)" }
+            RuntimeManager.alwaysOnCallback?.onStickyRestart()
+        } else if (intent.component == null || intent.component!!.packageName != packageName) {
+            log.d { "TunnelService started by system (Always-On trigger)" }
             RuntimeManager.alwaysOnCallback?.alwaysOnTriggered()
         }
 

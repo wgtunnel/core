@@ -1,6 +1,6 @@
 package com.wgtunnel.backend.network
 
-internal object NetworkMonitorNative {
+object NetworkMonitorNative {
     @JvmStatic external fun start(): Int
 
     @JvmStatic external fun stop()
