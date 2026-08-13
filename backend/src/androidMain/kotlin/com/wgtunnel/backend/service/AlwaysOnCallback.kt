@@ -4,4 +4,6 @@ interface AlwaysOnCallback {
     fun alwaysOnTriggered()
 
     fun onStickyRestart()
+
+    fun onVpnRevoked()
 }

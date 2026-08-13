@@ -51,7 +51,11 @@ internal class VpnCompanionService : LifecycleService() {
             intent?.component == null || intent.component!!.packageName != packageName
 
         if (isSystemRestart) {
-            log.i { "VpnCompanionService started by system" }
+            // VpnService is not an FGS and will not restart after process death when sticky. This
+            // companion service is the FGS
+            // Android actually brings back so we will trigger the restore from here.
+            log.i { "VpnCompanionService restarted by system (sticky)" }
+            RuntimeManager.alwaysOnCallback?.onStickyRestart()
             launchForegroundNotification()
         }
         return START_STICKY

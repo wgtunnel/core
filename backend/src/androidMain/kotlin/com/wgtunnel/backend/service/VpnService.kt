@@ -74,6 +74,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
     override fun onRevoke() {
         log.w { "VPN revoked by user via system settings" }
+        RuntimeManager.alwaysOnCallback?.onVpnRevoked()
         BypassSocket.setSocketProtector(null)
         disableKillSwitch()
         stopHevSocks5Bridge()
@@ -90,11 +91,9 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
         serviceScope.launch { serviceManager.getCompanionService() }
 
-        // START_STICKY after the process was killed
+        // Process death restore is owned by VpnCompanionService (the FGS)
         if (intent == null) {
-            log.d { "VpnService restarted by system (sticky)" }
-            RuntimeManager.alwaysOnCallback?.onStickyRestart()
-            return START_STICKY
+            return START_NOT_STICKY
         }
 
         val isUserLaunch = intent.getBooleanExtra(getUserLaunchExtraKey(this), false)
@@ -114,7 +113,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
             RuntimeManager.alwaysOnCallback?.alwaysOnTriggered()
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     fun shutdown() {
