@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/wgtunnel/backend/log"
 )
 
 type desktopResolver struct {
@@ -45,6 +46,11 @@ func (r *desktopResolver) RawExchange(ctx context.Context, _ int64, request []by
 	if err := msg.Unpack(request); err != nil {
 		return nil, fmt.Errorf("desktop local: unpack: %w", err)
 	}
+	qname := ""
+	if len(msg.Question) > 0 {
+		qname = msg.Question[0].Name
+	}
+	log.Debug("LocalDNS", "query %s via underlay servers=%v ifIndex=%d", qname, servers, r.underlay.IfIndex())
 
 	client := &dns.Client{
 		Net:     "udp",
@@ -57,6 +63,7 @@ func (r *desktopResolver) RawExchange(ctx context.Context, _ int64, request []by
 	for _, server := range servers {
 		resp, _, err := client.ExchangeContext(ctx, msg, server)
 		if err != nil {
+			log.Debug("LocalDNS", "query %s server=%s: %v", qname, server, err)
 			lastErr = err
 			continue
 		}
@@ -64,6 +71,7 @@ func (r *desktopResolver) RawExchange(ctx context.Context, _ int64, request []by
 			lastErr = fmt.Errorf("nil response from %s", server)
 			continue
 		}
+		log.Debug("LocalDNS", "query %s server=%s answers=%d", qname, server, len(resp.Answer))
 		return resp.Pack()
 	}
 	if lastErr == nil {

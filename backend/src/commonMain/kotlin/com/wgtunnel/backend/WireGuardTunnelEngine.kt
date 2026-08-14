@@ -28,7 +28,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig?,
     ): EngineStartResult {
-        val ifName = WGT_INTERFACE_PREFIX + tunnelId
+        val ifName = interfacePrefix() + tunnelId
 
         mode.config.`interface`.listenPort?.let { PortUtils.waitForUdpPortAvailable(it) }
 
@@ -83,7 +83,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                         dnsJson,
                     )
                 }
-                is BackendMode.Vpn -> startVpnTunnel(ifName, mode.config, dnsJson)
+                is BackendMode.Vpn -> startVpnTunnel(tunnelId, ifName, mode.config, dnsJson)
             }
 
         if (handle < 0) {
@@ -128,41 +128,32 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
     }
 
     private suspend fun startVpnTunnel(
+        tunnelId: Int,
         ifName: String,
         config: Config,
         dnsConfigJson: String?,
     ): Int {
-        val vpn = runtimeManager.getOrCreateVpnRuntime()
-        return if (runtimeManager.vpnUsesOsTunFd) {
-            val fd =
+        runtimeManager.getOrCreateVpnRuntime()
+        val tunFd =
+            if (runtimeManager.vpnUsesOsTunFd) {
                 runtimeManager.getOrCreateVpnRuntime().detachVpnTunnelFd()
                     ?: throw BackendException.Unauthorized("Failed to create tun interface")
-            val handle =
-                VpnBackend.turnOn(
-                    ifName,
-                    fd,
-                    config.asQuickString(),
-                    dnsConfigJson,
-                    runtimeManager.uapiPath,
-                )
-            if (handle < 0) {
-                throw BackendException.InternalError("Internal native error with code: $handle")
+            } else {
+                -1
             }
-            handle
-        } else {
-            val handle =
-                VpnBackend.turnOn(
-                    ifName,
-                    -1, // no-op for desktop
-                    config.asQuickString(),
-                    dnsConfigJson,
-                    runtimeManager.uapiPath,
-                )
-            if (handle < 0) {
-                throw BackendException.InternalError("Internal native error with code: $handle")
-            }
-            handle
+        val handle =
+            VpnBackend.turnOn(
+                ifName,
+                tunFd,
+                config.asQuickString(),
+                dnsConfigJson,
+                runtimeManager.uapiPath,
+            )
+        if (handle < 0) {
+            runCatching { runtimeManager.destroyVpnRuntime(listOf(tunnelId)) }
+            throw BackendException.InternalError("Internal native error with code: $handle")
         }
+        return handle
     }
 
     private suspend fun startProxyTunnel(
@@ -216,5 +207,8 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
     companion object {
         const val WGT_INTERFACE_PREFIX = "wgtun"
         const val LOCKDOWN_USERNAME = "local"
+
+        fun interfacePrefix(): String =
+            System.getProperty("wgtunnel.iface.prefix") ?: WGT_INTERFACE_PREFIX
     }
 }

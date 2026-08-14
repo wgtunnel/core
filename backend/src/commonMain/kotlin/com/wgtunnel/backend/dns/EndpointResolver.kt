@@ -28,19 +28,35 @@ internal class EndpointResolver(
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig? = null,
     ): BootstrapResolution = coroutineScope {
+        val staticPeers = mode.config.peers.filter { it.isStaticallyConfigured }
         val peersToResolve = mode.config.peers.filter { !it.isStaticallyConfigured }
         val peerResults = mutableMapOf<PublicKey, DnsBootstrapResult>()
         val dnsNeedsResolve = tunnelDnsConfig?.needsResolve() == true
         var resolvedDns: TunnelDnsConfig? = if (dnsNeedsResolve) null else tunnelDnsConfig
 
+        if (staticPeers.isNotEmpty()) {
+            log.i {
+                "Static IP peers (skip DNS): " +
+                    staticPeers.joinToString { "${shortKey(it.publicKey)}=${it.endpoint}" }
+            }
+        }
+
         if (peersToResolve.isEmpty() && !dnsNeedsResolve) {
+            log.i { "Bootstrap: nothing to resolve (all endpoints are static IPs)" }
             return@coroutineScope BootstrapResolution(emptyMap(), tunnelDnsConfig)
+        }
+
+        log.i {
+            "Bootstrap resolve starting: mode=${mode::class.simpleName} " +
+                "hosts=${peersToResolve.map { it.endpoint }} dnsNeedsResolve=$dnsNeedsResolve"
         }
 
         // Wait for connectivity
         val state = networkMonitor.networkState.first { it?.hasNetwork() == true }
+        log.d { "Network ready for bootstrap: $state" }
 
         var delayMs = 500L
+        var attempt = 0
         while (isActive) {
             if (networkMonitor.networkState.value?.hasNetwork() != true) {
                 delay(100.milliseconds)
@@ -50,12 +66,17 @@ internal class EndpointResolver(
 
             val dnsMode = getDnsMode()
             val bypassNeeded = mode is BackendMode.Vpn || isKillSwitchEnabled()
+            attempt++
 
             val resolver: PeerResolver =
                 when (dnsMode) {
                     is DnsBoostrapMode.System -> systemDns
                     is DnsBoostrapMode.Custom -> createCustomResolver(dnsMode.config, bypassNeeded)
                 }
+            log.i {
+                "Resolve attempt $attempt via ${describeDnsMode(dnsMode)} " +
+                    "bypass=$bypassNeeded (VPN/KS underlay)"
+            }
 
             var progressed = false
 
@@ -63,24 +84,44 @@ internal class EndpointResolver(
             for ((publicKey, _, endpoint) in peersToResolve) {
                 if (peerResults.containsKey(publicKey)) continue
                 val host = endpoint?.substringBeforeLast(":") ?: continue
-                val result = resolver.resolve(host)
+                val result =
+                    try {
+                        resolver.resolve(host)
+                    } catch (t: Exception) {
+                        log.w(t) { "Peer resolve threw host=$host peer=${shortKey(publicKey)}" }
+                        DnsBootstrapResult()
+                    }
                 if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
                     peerResults[publicKey] =
                         result.copy(
                             ipv6 = result.ipv6.map { if (it.startsWith("[")) it else "[$it]" }
                         )
+                    log.i {
+                        "Resolved peer ${shortKey(publicKey)} $endpoint → " +
+                            "v4=${result.ipv4} v6=${result.ipv6}"
+                    }
                     progressed = true
+                } else {
+                    log.w { "No addresses yet for peer ${shortKey(publicKey)} host=$host" }
                 }
             }
 
             if (dnsNeedsResolve && resolvedDns == null) {
                 val host = tunnelDnsConfig.resolveHost()
                 if (host != null) {
-                    val result = resolver.resolve(host)
+                    val result =
+                        try {
+                            resolver.resolve(host)
+                        } catch (t: Exception) {
+                            log.w(t) { "Tunnel DNS resolve threw host=$host" }
+                            DnsBootstrapResult()
+                        }
                     if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
                         resolvedDns = tunnelDnsConfig.withResolvedAddresses(result)
-                        log.d { "Tunnel DNS upstream resolved: $host" }
+                        log.i { "Tunnel DNS upstream $host → v4=${result.ipv4} v6=${result.ipv6}" }
                         progressed = true
+                    } else {
+                        log.w { "No addresses yet for tunnel DNS host=$host" }
                     }
                 }
             }
@@ -91,13 +132,14 @@ internal class EndpointResolver(
             val dnsDone = !dnsNeedsResolve || resolvedDns != null
 
             if (peersDone && dnsDone) {
-                log.d {
+                log.i {
                     "Bootstrap resolve complete (peers=${peerResults.size}, dns=${resolvedDns != null})"
                 }
                 return@coroutineScope BootstrapResolution(peerResults, resolvedDns)
             }
 
             if (!progressed) {
+                log.d { "Bootstrap retry in ${delayMs}ms (attempt=$attempt)" }
                 delay(delayMs.milliseconds)
                 delayMs = (delayMs * 2).coerceAtMost(MAX_BACKOFF)
             } else {
@@ -105,8 +147,19 @@ internal class EndpointResolver(
             }
         }
 
+        log.w { "Bootstrap resolve cancelled with peers=${peerResults.size}" }
         BootstrapResolution(peerResults, resolvedDns)
     }
+
+    private fun describeDnsMode(mode: DnsBoostrapMode): String =
+        when (mode) {
+            is DnsBoostrapMode.System -> "system/local underlay"
+            is DnsBoostrapMode.Custom ->
+                "custom protocol=${mode.config.protocol} upstream=${mode.config.upstream}"
+        }
+
+    private fun shortKey(key: PublicKey): String =
+        if (key.length <= 10) key else "${key.take(4)}…${key.takeLast(4)}"
 
     companion object {
         private const val MAX_BACKOFF = 30_000L

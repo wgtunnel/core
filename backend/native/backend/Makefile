@@ -85,11 +85,11 @@ $(GRADLE_USER_HOME)/caches/golang/$(GO_TARBALL):
 $(GO_DIR)/.prepared: $(GRADLE_USER_HOME)/caches/golang/$(GO_TARBALL) \
 		$(CURDIR)/goruntime-boottime-over-monotonic.diff
 	mkdir -p "$(dir $@)"
-	flock "$@.lock" -c ' \
+	SHELL=/bin/bash flock "$@.lock" -c ' \
 	[ -f "$@" ] && exit 0; \
 	tar -C "$(dir $@)" --strip-components=1 -xzf "$<" && \
 	patch -p1 -N -d "$(dir $@)" < "$(CURDIR)/goruntime-boottime-over-monotonic.diff" && \
-	find "$(dir $@)pkg" -mindepth 1 -maxdepth 1 -type d -name 'linux_*' -exec rm -rf {} +; \
+	find "$(dir $@)pkg" -mindepth 1 -maxdepth 1 -type d -name "linux_*" -exec rm -rf {} +; \
 	touch "$@"'
 
 $(DESTDIR)/libam-go.so: $(GO_DIR)/.prepared

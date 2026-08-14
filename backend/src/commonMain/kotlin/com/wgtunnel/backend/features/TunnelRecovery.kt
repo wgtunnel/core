@@ -286,7 +286,6 @@ internal class TunnelRecovery(
     private fun isIpv6Recoverable(snap: Snapshot): Boolean {
         val key = snap.activeNetworkKey
         return snap.networkHasIpv6 &&
-            // ipv6 recovery runs on the inverse condition of the failure recovery job
             !snap.shouldRecoveryBeActive &&
             key != null &&
             key != lastIpv4FallbackNetworkKey.load()

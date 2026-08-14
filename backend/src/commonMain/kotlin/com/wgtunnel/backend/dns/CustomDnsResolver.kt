@@ -39,7 +39,10 @@ class CustomDnsResolver(
                 listOf(upstream)
             }
 
-        log.d { "Using custom resolver with resolved upstreams $resolvedUpstreams" }
+        log.i {
+            "Custom DNS protocol=${dnsConfig.protocol} host=$host " +
+                "upstreams=$resolvedUpstreams bypass=$bypass"
+        }
 
         return try {
             NativeDnsResolver.resolveHostBootstrap(

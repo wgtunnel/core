@@ -4,6 +4,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -157,7 +158,17 @@ func (m *windowsMonitor) refresh() {
 	}
 
 	info, err := underlayFromDefaultRoute(m.ctx)
-	if err != nil {
+	if errors.Is(err, errPhysicalDefaultHidden) {
+		m.mu.RLock()
+		prev := m.current
+		m.mu.RUnlock()
+		if prev.HasUsableUnderlay() {
+			info = prev
+			log.Debug(tag, "keeping physical underlay %s ifIndex=%d (tunnel owns default route)", info.InterfaceName, info.IfIndex)
+		} else {
+			info = NetworkInfo{Type: NetworkDisconnected}
+		}
+	} else if err != nil {
 		log.Debug(tag, "underlay refresh: %v", err)
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
@@ -205,6 +216,7 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 
 	var best *winipcfg.MibIPforwardRow2
 	var bestMetric uint32 = ^uint32(0)
+	sawTunDefault := false
 
 	for i := range rows {
 		r := &rows[i]
@@ -213,6 +225,7 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 			continue
 		}
 		if isTunnelLUID(r.InterfaceLUID) {
+			sawTunDefault = true
 			continue
 		}
 		if r.Metric < bestMetric {
@@ -222,6 +235,9 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 	}
 
 	if best == nil {
+		if sawTunDefault {
+			return NetworkInfo{}, errPhysicalDefaultHidden
+		}
 		return NetworkInfo{Type: NetworkDisconnected}, nil
 	}
 	return networkInfoFromLUID(ctx, best.InterfaceLUID, best.InterfaceIndex)

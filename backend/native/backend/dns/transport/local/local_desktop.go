@@ -9,6 +9,7 @@ import (
 
 	"github.com/wgtunnel/backend/bootstrap/bypass"
 	"github.com/wgtunnel/backend/dns/transport"
+	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/network"
 )
 
@@ -20,16 +21,17 @@ func NewLocalTransport() transport.Transport {
 
 	info := mon.Current()
 	u.Update(normalizeServers(info.DNSServers), info.IfIndex)
+	log.Debug(tag, "underlay DNS servers=%v ifIndex=%d iface=%s", info.DNSServers, info.IfIndex, info.InterfaceName)
 
 	dr := &desktopResolver{
 		underlay: u,
-		dialer:   bypass.Dialer(true, info.IfIndex),
+		dialer:   bypass.NetworkDialer(info.IfIndex),
 		timeout:  5 * time.Second,
 	}
 
 	mon.Notify(func(info network.NetworkInfo) {
 		u.Update(normalizeServers(info.DNSServers), info.IfIndex)
-		dr.SetDialer(bypass.Dialer(true, info.IfIndex))
+		dr.SetDialer(bypass.NetworkDialer(info.IfIndex))
 	})
 
 	t := New(dr)

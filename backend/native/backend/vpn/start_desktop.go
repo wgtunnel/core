@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
@@ -42,6 +43,12 @@ var (
 //
 //export createInterface
 func createInterface(ifName string, config string) int32 {
+	// JNI go_string points at GetStringUTFChars. ReleaseStringUTFChars runs
+	// when the JNI wrapper returns, so anything stored (map keys, iface names)
+	// must be copied
+	ifName = strings.Clone(ifName)
+	config = strings.Clone(config)
+
 	conf, err := wireproxyawg.ParseConfigString(config)
 	if err != nil {
 		log.Error(tag, "CreateInterface parse: %v", err)
@@ -74,9 +81,15 @@ func createInterface(ifName string, config string) int32 {
 
 	tunDev, err := tun.CreateTUN(ifName, mtu)
 	if err != nil {
-		cleanupReserve()
 		log.Error(tag, "CreateTUN: %v", err)
-		return -1
+		removeStaleTun(ifName)
+		tunDev, err = tun.CreateTUN(ifName, mtu)
+		if err != nil {
+			cleanupReserve()
+			log.Error(tag, "CreateTUN retry: %v", err)
+			return -1
+		}
+		log.Debug(tag, "CreateTUN succeeded after removing stale %s", ifName)
 	}
 
 	fw, err := firewallmgr.Get()
@@ -100,6 +113,7 @@ func createInterface(ifName string, config string) int32 {
 		_ = rt.Close()
 		_ = tunDev.Close()
 		cleanupReserve()
+		log.Error(tag, "router config: %v", err)
 		return -1
 	}
 
@@ -126,19 +140,27 @@ func createInterface(ifName string, config string) int32 {
 
 //export destroyInterface
 func destroyInterface(ifName string) {
+	ifName = strings.Clone(ifName)
+
 	pendingMu.Lock()
 	p := pendingByIface[ifName]
 	delete(pendingByIface, ifName)
 	pendingMu.Unlock()
-	if p == nil {
-		return
+	if p != nil {
+		if p.router != nil {
+			_ = p.router.Close()
+		}
+		if p.tun != nil {
+			_ = p.tun.Close()
+		}
+	} else {
+		// Pending missed. JNI key was not cloned, takePending already consumed
+		// it, or a previous process crashed. Still drop leftover ip/nftables.
+		cleanupOrphanedDesktopIface(ifName)
 	}
-	if p.router != nil {
-		_ = p.router.Close()
-	}
-	if p.tun != nil {
-		_ = p.tun.Close()
-	}
+	// Always drop a leftover kernel iface, even if we no longer hold pending
+	// state
+	removeStaleTun(ifName)
 	log.Debug(tag, "VPN interface %s destroyed", ifName)
 }
 
@@ -147,8 +169,13 @@ func takePending(ifName string) (tun.Device, router.Router, error) {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
 	p := pendingByIface[ifName]
-	if p == nil {
-		return nil, nil, fmt.Errorf("no pending interface %q", ifName)
+	if p == nil || p.tun == nil {
+		keys := make([]string, 0, len(pendingByIface))
+		for k, v := range pendingByIface {
+			tunReady := v != nil && v.tun != nil
+			keys = append(keys, fmt.Sprintf("%q(tun=%v)", k, tunReady))
+		}
+		return nil, nil, fmt.Errorf("no pending interface %q (have %v)", ifName, keys)
 	}
 	delete(pendingByIface, ifName)
 	t, r := p.tun, p.router
@@ -165,6 +192,11 @@ func startVpn(
 	uapiPath string,
 ) int32 {
 
+	ifName = strings.Clone(ifName)
+	config = strings.Clone(config)
+	dnsConfig = strings.Clone(dnsConfig)
+	uapiPath = strings.Clone(uapiPath)
+
 	tunDev, rt, err := takePending(ifName)
 	if err != nil {
 		log.Error(tag, "TurnOn: %v", err)
@@ -176,6 +208,10 @@ func startVpn(
 		if rt != nil {
 			_ = rt.Close()
 		}
+		if tunDev != nil {
+			_ = tunDev.Close()
+		}
+		removeStaleTun(ifName)
 		return -1
 	}
 

@@ -11,10 +11,13 @@ package osrouter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
@@ -61,7 +64,7 @@ func (r *linuxRouter) GetPhysicalInterfaceIndex() uint32 {
 func New(iface string, fw firewall.Firewall, _ tun.Device) (router.Router, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &linuxRouter{
-		iface:       iface,
+		iface:       strings.Clone(iface),
 		fw:          fw.(*osfirewall.LinuxFirewall),
 		v6Available: nettest.SupportsIPv6(),
 		policyRules: make(map[int][]*netlink.Rule),
@@ -104,7 +107,9 @@ func (r *linuxRouter) Set(c *router.Config) error {
 	}
 
 	if err := r.syncDNS(newC, prevC); err != nil {
-		return err
+		// Protection (iface + routes + firewall) must still succeed if
+		// systemd-resolved / resolv.conf apply fails.
+		log.Error(tag, "sync DNS (continuing): %v", err)
 	}
 
 	r.updatePrevState(newC)
@@ -126,10 +131,39 @@ func (r *linuxRouter) Close() error {
 	if err := r.Set(nil); err != nil {
 		log.Error(tag, "cleanup set nil: %v", err)
 	}
+
+	// Set(nil) only deletes rules this instance tracked. A previous crash or
+	// "already exists, skipping" leaves orphans that survive iface delete.
+	r.forceClearTunnelRouting()
 	r.deletePolicyRules(netlink.FAMILY_V4)
 	r.deletePolicyRules(netlink.FAMILY_V6)
+	r.deleteBootstrapPolicyRules(netlink.FAMILY_V4)
+	r.deleteBootstrapPolicyRules(netlink.FAMILY_V6)
+
+	if r.fw.IsEnabled() {
+		if r.fw.IsPersistent() {
+			_ = r.fw.RemoveTunnelBypasses(r.iface)
+		} else {
+			_ = r.fw.Disable()
+		}
+	}
 	log.Debug(tag, "Router closed")
 	return nil
+}
+
+func (r *linuxRouter) forceClearTunnelRouting() {
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := netlink.RouteListFiltered(fam, &netlink.Route{Table: tunnelTableID}, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			log.Error(tag, "list tunnel table %d family %d: %v", tunnelTableID, fam, err)
+			continue
+		}
+		for i := range routes {
+			if err := netlink.RouteDel(&routes[i]); err != nil {
+				log.Error(tag, "del leftover tunnel route %v: %v", routes[i].Dst, err)
+			}
+		}
+	}
 }
 
 func (r *linuxRouter) cleanupPreviousState(link netlink.Link, newC, prevC *router.Config) {
@@ -370,11 +404,21 @@ func (r *linuxRouter) addBootstrapPolicyRules(family int) error {
 }
 
 func (r *linuxRouter) deleteBootstrapPolicyRules(family int) error {
-	rule := netlink.NewRule()
-	rule.Family = family
-	rule.Mark = mark.LinuxBootstrapMarkNum
-	rule.Priority = rulePrioBootstrap
-	return netlink.RuleDel(rule)
+	r.sweepPolicyRules(family, func(rule netlink.Rule) bool {
+		return rule.Priority == rulePrioBootstrap && rule.Mark == mark.LinuxBootstrapMarkNum
+	})
+	return nil
+}
+
+func isFileExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrExist) || errors.Is(err, unix.EEXIST) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "file exists") || strings.Contains(msg, "exists")
 }
 
 func (r *linuxRouter) addRuleIdempotent(rule *netlink.Rule) error {
@@ -388,7 +432,10 @@ func (r *linuxRouter) addRuleIdempotent(rule *netlink.Rule) error {
 			return nil // Already exists
 		}
 	}
-	return netlink.RuleAdd(rule)
+	if err := netlink.RuleAdd(rule); err != nil && !isFileExists(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *linuxRouter) replaceRouteIdempotent(link netlink.Link, rt netip.Prefix, table int) error {
@@ -460,13 +507,13 @@ func (r *linuxRouter) addPolicyRules(fam int) error {
 		}
 	}
 	if !markExists {
-		if err := netlink.RuleAdd(markRule); err != nil {
+		if err := netlink.RuleAdd(markRule); err != nil && !errors.Is(err, os.ErrExist) && !isFileExists(err) {
 			return fmt.Errorf("add mark rule fam %d: %w", fam, err)
 		}
-		r.policyRules[fam] = append(r.policyRules[fam], markRule)
 	} else {
-		log.Debug(tag, "Mark rule fam %d already exists, skipping", fam)
+		log.Debug(tag, "Mark rule fam %d already exists, adopting", fam)
 	}
+	r.policyRules[fam] = append(r.policyRules[fam], markRule)
 
 	defaultRule := netlink.NewRule()
 	defaultRule.Family = fam
@@ -481,13 +528,13 @@ func (r *linuxRouter) addPolicyRules(fam int) error {
 		}
 	}
 	if !defaultExists {
-		if err := netlink.RuleAdd(defaultRule); err != nil {
+		if err := netlink.RuleAdd(defaultRule); err != nil && !errors.Is(err, os.ErrExist) && !isFileExists(err) {
 			return fmt.Errorf("add default tunnel rule fam %d: %w", fam, err)
 		}
-		r.policyRules[fam] = append(r.policyRules[fam], defaultRule)
 	} else {
-		log.Debug(tag, "Default tunnel rule fam %d already exists, skipping", fam)
+		log.Debug(tag, "Default tunnel rule fam %d already exists, adopting", fam)
 	}
+	r.policyRules[fam] = append(r.policyRules[fam], defaultRule)
 	return nil
 }
 
@@ -499,4 +546,35 @@ func (r *linuxRouter) deletePolicyRules(fam int) {
 		}
 	}
 	r.policyRules[fam] = nil
+	r.sweepPolicyRules(fam, isTrackedTunnelPolicyRule)
+}
+
+func isTrackedTunnelPolicyRule(rule netlink.Rule) bool {
+	switch rule.Priority {
+	case rulePrioMark:
+		return rule.Mark == mark.LinuxBypassMarkNum && rule.Table == unix.RT_TABLE_MAIN
+	case rulePrioDefault:
+		return rule.Table == tunnelTableID
+	default:
+		return false
+	}
+}
+
+func (r *linuxRouter) sweepPolicyRules(fam int, match func(netlink.Rule) bool) {
+	rules, err := netlink.RuleList(fam)
+	if err != nil {
+		log.Debug(tag, "list policy rules fam %d: %v (ignored)", fam, err)
+		return
+	}
+	for i := range rules {
+		rule := rules[i]
+		if !match(rule) {
+			continue
+		}
+		if err := netlink.RuleDel(&rule); err != nil {
+			log.Debug(tag, "del leftover policy rule fam %d (prio %d): %v (ignored)", fam, rule.Priority, err)
+			continue
+		}
+		log.Debug(tag, "Deleted leftover policy rule fam %d prio %d table %d", fam, rule.Priority, rule.Table)
+	}
 }

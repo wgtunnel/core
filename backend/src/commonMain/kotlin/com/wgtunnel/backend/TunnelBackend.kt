@@ -210,6 +210,10 @@ class TunnelBackend(
         tunnelDnsConfig: TunnelDnsConfig? = null,
     ) {
         updateTunnelBootstrapState(tunnel.id, BootstrapState.ResolvingDns)
+        log.i {
+            "VPN: TUN is up (black-hole), resolving peer endpoints for ${tunnel.name} " +
+                "before TurnOn"
+        }
 
         val bootstrapResolution = endpointResolver.resolve(mode, tunnelDnsConfig)
 
@@ -221,6 +225,10 @@ class TunnelBackend(
             } else {
                 FamilyOverride.ForceIpv4
             }
+        log.i {
+            "Endpoint family: strategy=${tunnel.ipStrategy::class.simpleName} " +
+                "networkHasIpv6=$networkHasIpv6 → $familyOverride"
+        }
 
         // No current endpoints yet, builds host map based on family preference
         val hostMap =
@@ -229,6 +237,17 @@ class TunnelBackend(
                 familyOverride = familyOverride,
             )
         val runtimeMode = mode.rebuildModeWithHostMap(hostMap)
+        mode.config.peers.forEach { peer ->
+            val chosen = runtimeMode.config.peers.firstOrNull { it.publicKey == peer.publicKey }
+            val resolved = hostMap[peer.publicKey]
+            log.i {
+                val key =
+                    if (peer.publicKey.length <= 10) peer.publicKey
+                    else "${peer.publicKey.take(4)}…${peer.publicKey.takeLast(4)}"
+                "Using endpoint $key ${peer.endpoint} → ${chosen?.endpoint}" +
+                    (resolved?.forcedPort?.let { " (ip4p port=$it)" } ?: "")
+            }
+        }
 
         updateActiveTunnel(tunnel.id) {
             it.copy(
@@ -237,8 +256,17 @@ class TunnelBackend(
             )
         }
 
+        log.i { "VPN: bootstrap complete, bringing tunnel up (TurnOn) for ${tunnel.name}" }
         // pass our bootstrapped tunnel dns config
         startEngineAndRegister(tunnel.id, runtimeMode, bootstrapResolution.resolvedTunnelDnsConfig)
+    }
+
+    // Desktop TurnOn consumes a pending iface created before bootstrap. Stop
+    // closes that TUN, so bounce must create it again. Android keeps the
+    // VpnService fd across bounce.
+    private suspend fun recreateVpnInterfaceIfNeeded(tunnel: Tunnel, mode: BackendMode) {
+        if (mode !is BackendMode.Vpn || runtimeManager.vpnUsesOsTunFd) return
+        runtimeManager.getOrCreateVpnRuntime().createTunInterface(tunnel, mode.config, false)
     }
 
     // Should only be called if mode config is static
@@ -249,6 +277,7 @@ class TunnelBackend(
         dns: TunnelDnsConfig?,
     ): Boolean {
         engine.stop(handle, mode)
+        recreateVpnInterfaceIfNeeded(tunnel, mode)
         startEngineAndRegister(tunnel.id, mode, dns)
         return true
     }
@@ -271,6 +300,7 @@ class TunnelBackend(
 
         val runtimeMode = mode.withEndpointsFrom(activeConfig)
         engine.stop(handle, mode)
+        recreateVpnInterfaceIfNeeded(tunnel, runtimeMode)
         startEngineAndRegister(tunnel.id, runtimeMode, tunnelDnsConfig)
         return true
     }
@@ -318,6 +348,7 @@ class TunnelBackend(
         }
 
         engine.stop(handle, mode)
+        recreateVpnInterfaceIfNeeded(tunnel, runtimeMode)
         startEngineAndRegister(
             tunnel.id,
             runtimeMode,
@@ -335,22 +366,29 @@ class TunnelBackend(
 
             val runtimeTunnelDnsConfig = active.getRuntimeTunnelDnsConfig()
 
-            val bounced =
-                when {
-                    !mode.config.hasDynamicEndpoints() -> {
-                        restartWithCurrentMode(handle, tunnel, mode, runtimeTunnelDnsConfig)
+            return try {
+                val bounced =
+                    when {
+                        !mode.config.hasDynamicEndpoints() -> {
+                            restartWithCurrentMode(handle, tunnel, mode, runtimeTunnelDnsConfig)
+                        }
+                        !withFreshResolution -> {
+                            bounceActiveConfig(handle, tunnel, mode, runtimeTunnelDnsConfig)
+                        }
+                        else -> {
+                            bounceWithFreshDns(handle, tunnel, mode, runtimeTunnelDnsConfig)
+                        }
                     }
-                    !withFreshResolution -> {
-                        bounceActiveConfig(handle, tunnel, mode, runtimeTunnelDnsConfig)
-                    }
-                    else -> {
-                        bounceWithFreshDns(handle, tunnel, mode, runtimeTunnelDnsConfig)
-                    }
+                if (bounced) {
+                    _events.emit(TunnelEvent.SeamlessRecoveryAttempted(tunnelId))
                 }
-            if (bounced) {
-                _events.emit(TunnelEvent.SeamlessRecoveryAttempted(tunnelId))
+                bounced
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                log.e(t) { "Tunnel bounce failed for $tunnelId" }
+                false
             }
-            return bounced
         }
 
     private fun startTunnelBootstrapJob(
@@ -416,6 +454,10 @@ class TunnelBackend(
                 runtimeManager.getOrCreateTunnelRuntime()
             }
             is BackendMode.Vpn -> {
+                log.i {
+                    "VPN: creating TUN/routes/firewall (black-hole) before bootstrap " +
+                        "for ${tunnel.name} (id=${tunnel.id})"
+                }
                 val vpn = runtimeManager.getOrCreateVpnRuntime()
                 vpn.createTunInterface(tunnel, mode.config, fakeDns)
             }
@@ -452,8 +494,6 @@ class TunnelBackend(
         val active = activeTunnels[tunnelId]
         val mode = active?.mode
 
-        val vpnTypeCount = activeTunnels.values.count { it.mode is BackendMode.Vpn }
-
         val proxyTypeCount = activeTunnels.values.count { it.mode is BackendMode.Proxy.Standard }
 
         // Always stop native if we still have a handle
@@ -470,7 +510,9 @@ class TunnelBackend(
         }
         byTunnelId.remove(tunnelId)
 
-        if (vpnTypeCount == 1 && !_status.value.killSwitch.enabled) {
+        // VPN mode owns the TUN / VpnService session. Kill switch is independent
+        // and must not be started or stopped here (including KillSwitchPrimary).
+        if (mode is BackendMode.Vpn) {
             runtimeManager.destroyVpnRuntime(listOf(tunnelId))
         }
         if (proxyTypeCount == 1) {

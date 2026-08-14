@@ -4,6 +4,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/util"
 	"github.com/wgtunnel/backend/vpn/dns"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -140,46 +142,58 @@ func isWifiName(name string) bool {
 		strings.HasPrefix(n, "wl")
 }
 
+func isTunnelIface(name string) bool {
+	return strings.HasPrefix(name, constants.TunPrefix) ||
+		strings.HasPrefix(name, "tun") ||
+		strings.HasPrefix(name, "wg")
+}
+
 func underlayFromDefaultRoute(ctx context.Context, wifiClient *wifi.Client) (NetworkInfo, error) {
-	// Get IPv4 routes first
 	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err != nil {
 		return NetworkInfo{}, fmt.Errorf("route list: %w", err)
 	}
 
-	var defaultRoute *netlink.Route
+	var mainPhysical, anyPhysical *netlink.Route
+	sawTunDefault := false
 	for i := range routes {
 		r := &routes[i]
-
-		// Default route
-		if r.Dst == nil || r.Dst.IP.Equal(net.IPv4zero) {
-			// Skip routes with no link index
-			if r.LinkIndex == 0 {
-				continue
-			}
-
-			link, err := netlink.LinkByIndex(r.LinkIndex)
-			if err != nil {
-				continue
-			}
-			name := link.Attrs().Name
-
-			// Ignore our own tun interface and other common tun interface names
-			if strings.HasPrefix(name, constants.TunPrefix) ||
-				strings.HasPrefix(name, "tun") ||
-				strings.HasPrefix(name, "wg") {
-				continue
-			}
-			defaultRoute = r
+		if r.Dst != nil && !r.Dst.IP.Equal(net.IPv4zero) {
+			continue
+		}
+		if r.LinkIndex == 0 {
+			continue
+		}
+		link, err := netlink.LinkByIndex(r.LinkIndex)
+		if err != nil {
+			continue
+		}
+		name := link.Attrs().Name
+		if isTunnelIface(name) {
+			sawTunDefault = true
+			continue
+		}
+		if anyPhysical == nil {
+			anyPhysical = r
+		}
+		if r.Table == unix.RT_TABLE_MAIN || r.Table == 0 {
+			mainPhysical = r
 			break
 		}
 	}
 
-	if defaultRoute == nil {
+	chosen := mainPhysical
+	if chosen == nil {
+		chosen = anyPhysical
+	}
+	if chosen == nil {
+		if sawTunDefault {
+			return NetworkInfo{}, errPhysicalDefaultHidden
+		}
 		return NetworkInfo{Type: NetworkDisconnected}, nil
 	}
 
-	return networkInfoFromLinkIndex(ctx, wifiClient, defaultRoute.LinkIndex)
+	return networkInfoFromLinkIndex(ctx, wifiClient, chosen.LinkIndex)
 }
 
 func networkInfoFromLinkIndex(ctx context.Context, client *wifi.Client, ifIndex int) (NetworkInfo, error) {
@@ -268,7 +282,22 @@ func (m *linuxMonitor) refresh() {
 		return
 	}
 	info, err := underlayFromDefaultRoute(m.ctx, m.wifiClient)
-	if err != nil {
+	if errors.Is(err, errPhysicalDefaultHidden) {
+		m.mu.RLock()
+		prev := m.current
+		m.mu.RUnlock()
+		if prev.HasUsableUnderlay() {
+			refreshed, rerr := networkInfoFromLinkIndex(m.ctx, m.wifiClient, int(prev.IfIndex))
+			if rerr == nil {
+				info = refreshed
+			} else {
+				info = prev
+			}
+			log.Debug(tag, "keeping physical underlay %s ifIndex=%d (tunnel owns default route)", info.InterfaceName, info.IfIndex)
+		} else {
+			info = NetworkInfo{Type: NetworkDisconnected}
+		}
+	} else if err != nil {
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
 

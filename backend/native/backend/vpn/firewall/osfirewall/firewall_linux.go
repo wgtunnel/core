@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"strings"
 	"sync/atomic"
 
 	"github.com/google/nftables"
@@ -93,6 +94,7 @@ func (f *LinuxFirewall) AddTunnelBypasses(iface string) error {
 	if !f.IsEnabled() {
 		return errors.New("kill switch must be enabled to add tunnel bypasses")
 	}
+	iface = strings.Clone(iface)
 
 	// remove old rules
 	_ = f.RemoveTunnelBypasses(iface)
@@ -137,23 +139,7 @@ func (f *LinuxFirewall) AddTunnelBypasses(iface string) error {
 		newRules = append(newRules, stateRule)
 
 		// add tunnel interface bypass rule
-		tunnelBypassRule := &nftables.Rule{
-			Table: table.Filter,
-			Chain: outputChain,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyOIFNAME,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     []byte(iface + "\x00"),
-				},
-				&expr.Counter{},
-				&expr.Verdict{Kind: expr.VerdictAccept},
-			},
-		}
+		tunnelBypassRule := tunnelOifAcceptRule(table.Filter, outputChain, iface)
 		existing, _ := findRule(f.conn, tunnelBypassRule)
 		if existing == nil {
 			f.conn.InsertRule(tunnelBypassRule)
@@ -179,24 +165,66 @@ func (f *LinuxFirewall) RemoveTunnelBypasses(iface string) error {
 		log.Debug(tag, "Firewall is not enabled, skipping")
 		return nil
 	}
+	iface = strings.Clone(iface)
 
-	rules, ok := f.tunnelRules[iface]
-	if !ok {
-		return nil
+	if rules, ok := f.tunnelRules[iface]; ok {
+		for _, rule := range rules {
+			f.conn.DelRule(rule)
+		}
+		delete(f.tunnelRules, iface)
+		if err := f.conn.Flush(); err != nil {
+			log.Debug(tag, "flush tracked tunnel bypasses for %s: %v (continuing)", iface, err)
+		}
 	}
 
-	for _, rule := range rules {
-		f.conn.DelRule(rule)
+	// Tracking can miss leftover kernel rules (JNI string key, previous
+	// process, or "already exists"). Reconstruct and delete by content.
+	for _, table := range f.getTables() {
+		if table.Filter == nil {
+			continue
+		}
+		outputChain, err := getChainFromTable(f.conn, table.Filter, chainNameOutput)
+		if err != nil {
+			continue
+		}
+		f.deleteMatchingRule(createFwmarkRule(table.Filter, outputChain, mark.LinuxBootstrapMarkNum))
+		f.deleteMatchingRule(tunnelOifAcceptRule(table.Filter, outputChain, iface))
 	}
 
 	if err := f.conn.Flush(); err != nil {
 		return fmt.Errorf("flush after removing tunnel bypasses: %w", err)
 	}
 
-	delete(f.tunnelRules, iface)
-
 	log.Debug(tag, "Removed tunnel bypasses for iface %s", iface)
 	return nil
+}
+
+func tunnelOifAcceptRule(table *nftables.Table, chain *nftables.Chain, iface string) *nftables.Rule {
+	return &nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{
+				Key:      expr.MetaKeyOIFNAME,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte(iface + "\x00"),
+			},
+			&expr.Counter{},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	}
+}
+
+func (f *LinuxFirewall) deleteMatchingRule(template *nftables.Rule) {
+	existing, err := findRule(f.conn, template)
+	if err != nil || existing == nil {
+		return
+	}
+	f.conn.DelRule(existing)
 }
 
 func (f *LinuxFirewall) Disable() error {
@@ -775,23 +803,7 @@ func (f *LinuxFirewall) addKillSwitchRules() error {
 
 // addTunnelInterfaceRule adds a rule to let our tun interface escape firewall
 func (f *LinuxFirewall) addTunnelInterfaceRule(iface string, table *nftables.Table, chain *nftables.Chain) error {
-	tunnelBypassRule := &nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyOIFNAME,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte(iface + "\x00"),
-			},
-			&expr.Counter{},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	}
+	tunnelBypassRule := tunnelOifAcceptRule(table, chain, iface)
 	existing, _ := findRule(f.conn, tunnelBypassRule)
 	if existing == nil {
 		f.conn.InsertRule(tunnelBypassRule)

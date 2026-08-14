@@ -1,13 +1,17 @@
 package com.wgtunnel.backend.service
 
 import com.wgtunnel.backend.ApplicationProvider
+import com.wgtunnel.backend.DesktopApplicationProvider
 import com.wgtunnel.backend.DesktopVpnBackend
 import com.wgtunnel.backend.WireGuardTunnelEngine
 import com.wgtunnel.backend.model.KillSwitchConfig
 
 actual class RuntimeManager actual constructor(applicationProvider: ApplicationProvider) {
 
-    actual val uapiPath = "/run/wgtunnel"
+    private val desktop = applicationProvider as DesktopApplicationProvider
+
+    actual val uapiPath: String
+        get() = desktop.uapiPath
 
     actual val vpnUsesOsTunFd: Boolean
         get() = false
@@ -26,7 +30,7 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
 
     actual suspend fun destroyVpnRuntime(tunnelIds: List<Int>) {
         tunnelIds.forEach { id ->
-            val interfaceName = WireGuardTunnelEngine.WGT_INTERFACE_PREFIX + "$id"
+            val interfaceName = WireGuardTunnelEngine.interfacePrefix() + "$id"
             DesktopVpnBackend.destroyInterface(interfaceName)
         }
     }

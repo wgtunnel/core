@@ -21,11 +21,16 @@ func BypassSocket(fd uintptr) error {
 	return nil
 }
 
-// ifIndex is ignored on Android.
+// ifIndex is ignored on Android. Other transports use VpnService.protect.
 func Dialer(useBypass bool, ifIndex uint32) *net.Dialer {
 	_ = ifIndex
 	if !useBypass {
 		return &net.Dialer{}
 	}
 	return NewBypassDialer(BypassSocket)
+}
+
+// NetworkDialer is unused on Android (local uses android_res_nsend / Network).
+func NetworkDialer(ifIndex uint32) *net.Dialer {
+	return Dialer(true, ifIndex)
 }

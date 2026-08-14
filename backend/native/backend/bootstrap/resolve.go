@@ -13,14 +13,21 @@ import (
 	"github.com/wgtunnel/backend/dns/transport"
 	"github.com/wgtunnel/backend/dns/transport/doh"
 	"github.com/wgtunnel/backend/dns/transport/dot"
+	"github.com/wgtunnel/backend/dns/transport/local"
 	"github.com/wgtunnel/backend/dns/transport/plain"
+	"github.com/wgtunnel/backend/log"
 )
+
+const tag = "Bootstrap"
 
 // Resolve runs a one-shot Ipv4 and IPv6 lookup using options
 func Resolve(ctx context.Context, host string, opts Options) (v4, v6 []netip.Addr, err error) {
 	opts = opts.withDefaults()
+	log.Debug(tag, "lookup host=%s protocol=%s upstream=%s", host, opts.Protocol, opts.ResolvedUpstream)
+
 	tr, err := newTransport(opts)
 	if err != nil {
+		log.Error(tag, "transport host=%s protocol=%s: %v", host, opts.Protocol, err)
 		return nil, nil, err
 	}
 	defer tr.Close()
@@ -45,8 +52,10 @@ func Resolve(ctx context.Context, host string, opts Options) (v4, v6 []netip.Add
 	}
 
 	if len(v4) == 0 && len(v6) == 0 {
+		log.Error(tag, "no addresses for %s protocol=%s: %v", host, opts.Protocol, err)
 		return nil, nil, fmt.Errorf("no addresses for %s: %v", host, err)
 	}
+	log.Debug(tag, "lookup host=%s protocol=%s → v4=%s v6=%s", host, opts.Protocol, joinAddrs(v4), joinAddrs(v6))
 	return v4, v6, nil
 }
 
@@ -56,6 +65,8 @@ func newTransport(opts Options) (transport.Transport, error) {
 		return newDoHTransport(opts.OriginalUpstream, opts.ResolvedUpstream, opts.Dialer)
 	case "dot":
 		return newDoTTransport(opts.OriginalUpstream, opts.ResolvedUpstream, opts.Dialer)
+	case "local":
+		return local.NewLocalTransport(), nil
 	default:
 		return newPlainTransport(opts.ResolvedUpstream, opts.Dialer)
 	}

@@ -3,6 +3,7 @@ package com.wgtunnel.backend.service
 import com.wgtunnel.backend.DesktopVpnBackend
 import com.wgtunnel.backend.Tunnel
 import com.wgtunnel.backend.WireGuardTunnelEngine
+import com.wgtunnel.backend.exception.BackendException
 import com.wgtunnel.parser.Config
 
 internal object DesktopVpnRuntime : VpnRuntime {
@@ -13,8 +14,14 @@ internal object DesktopVpnRuntime : VpnRuntime {
         fakeDns: Boolean,
     ) {
         // TODO integrate fakeDNS for desktop
-        val interfaceName = WireGuardTunnelEngine.WGT_INTERFACE_PREFIX + "${tunnel.id}"
-        DesktopVpnBackend.createInterface(interfaceName, config.asQuickString())
+        val interfaceName = WireGuardTunnelEngine.interfacePrefix() + "${tunnel.id}"
+        val rc = DesktopVpnBackend.createInterface(interfaceName, config.asQuickString())
+        if (rc < 0) {
+            DesktopVpnBackend.destroyInterface(interfaceName)
+            throw BackendException.InternalError(
+                "Failed to create tun interface $interfaceName (native code $rc)"
+            )
+        }
     }
 
     override fun detachVpnTunnelFd(): Int? = null
