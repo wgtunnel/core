@@ -69,6 +69,7 @@ add_custom_command(
 		VERBATIM
 		DEPENDS
 		${GO_DIR}/Makefile
+		${GO_DIR}/goruntime-boottime-over-monotonic.diff
 		${GO_DIR}/go.mod
 		${GO_DIR}/main_android.go
 		${GO_DIR}/jni/jni.go

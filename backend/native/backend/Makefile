@@ -1,11 +1,15 @@
-# SPDX-License-Identifier: Apache-2.0
-# Desktop (default) + Android (NDK/CMake: make android ...)
+SHELL := /bin/bash
 
-GO ?= go
 BUILDDIR ?= $(CURDIR)/build
 DESTDIR ?= $(CURDIR)/out
 # Gradle overrides this to src/jvmMain/resources/natives
 RESOURCEDIR ?= $(CURDIR)/../../src/jvmMain/resources/natives
+
+# Linux/Android nanotime is patched to CLOCK_BOOTTIME
+GO_VERSION := 1.26.5
+GO_DIR := $(BUILDDIR)/go-$(GO_VERSION)
+GRADLE_USER_HOME ?= $(HOME)/.gradle
+PATCHED_GO := GOTOOLCHAIN=local GOROOT="$(GO_DIR)" PATH="$(GO_DIR)/bin:$(PATH)"
 
 export CGO_ENABLED := 1
 export GOCACHE ?= $(BUILDDIR)/go-cache
@@ -13,7 +17,7 @@ export GOCACHE ?= $(BUILDDIR)/go-cache
 # Project JNI headers (vpn_jni.h)
 JNI_INCLUDES := -I$(CURDIR)/jni/include
 
-# JDK JNI headers (required on desktop; NDK supplies these on Android)
+# JDK JNI headers
 JAVA_HOME ?= $(shell dirname $$(dirname $$(readlink -f $$(which java))))
 ifeq ($(HOST_OS),darwin)
   JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/darwin
@@ -23,7 +27,7 @@ else
   JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/win32
 endif
 
-# Desktop cgo flags: JDK + our headers
+# Desktop cgo flags
 DESKTOP_CGO_CFLAGS := $(JDK_JNI_CFLAGS) $(JNI_INCLUDES)
 
 HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
@@ -60,74 +64,101 @@ endif
 default: desktop
 desktop: copy_to_resources
 
-# ---------------------------------------------------------------------------
-# Android (unchanged idea — NDK provides jni.h via --sysroot)
-# ---------------------------------------------------------------------------
+# Android NDK provides jni.h via --sysroot
+GO_PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(NDK_GO_ARCH_MAP_$(shell uname -m))
+GO_TARBALL := go$(GO_VERSION).$(GO_PLATFORM).tar.gz
+GO_HASH_darwin-amd64 := 6231d8d3b8f5552ec6cbf6d685bdd5482e1e703214b120e89b3bf0d7bf1ef725
+GO_HASH_darwin-arm64 := efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a
+GO_HASH_linux-amd64 := 5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+GO_HASH_linux-arm64 := fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
+
 android: $(DESTDIR)/libam-go.so
 
-$(DESTDIR)/libam-go.so:
+$(GRADLE_USER_HOME)/caches/golang/$(GO_TARBALL):
+	mkdir -p "$(dir $@)"
+	flock "$@.lock" -c ' \
+	[ -f "$@" ] && exit 0; \
+	curl -o "$@.tmp" "https://dl.google.com/go/$(GO_TARBALL)" && \
+	echo "$(GO_HASH_$(GO_PLATFORM))  $@.tmp" | sha256sum -c && \
+	mv "$@.tmp" "$@"'
+
+$(GO_DIR)/.prepared: $(GRADLE_USER_HOME)/caches/golang/$(GO_TARBALL) \
+		$(CURDIR)/goruntime-boottime-over-monotonic.diff
+	mkdir -p "$(dir $@)"
+	flock "$@.lock" -c ' \
+	[ -f "$@" ] && exit 0; \
+	tar -C "$(dir $@)" --strip-components=1 -xzf "$<" && \
+	patch -p1 -N -d "$(dir $@)" < "$(CURDIR)/goruntime-boottime-over-monotonic.diff" && \
+	find "$(dir $@)pkg" -mindepth 1 -maxdepth 1 -type d -name 'linux_*' -exec rm -rf {} +; \
+	touch "$@"'
+
+$(DESTDIR)/libam-go.so: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	@test -n "$(ANDROID_ARCH_NAME)" || (echo "ANDROID_ARCH_NAME required"; exit 1)
 	@test -n "$(ANDROID_PACKAGE_NAME)" || (echo "ANDROID_PACKAGE_NAME required"; exit 1)
 	@test -n "$(TARGET)" || (echo "TARGET required"; exit 1)
 	@test -n "$(SYSROOT)" || (echo "SYSROOT required"; exit 1)
 	$(eval CLANG_FLAGS := --target=$(TARGET) --sysroot=$(SYSROOT))
+	$(PATCHED_GO) \
 	CGO_CFLAGS="$(CLANG_FLAGS) $(subst -mthumb,-marm,$(CFLAGS)) $(JNI_INCLUDES)" \
 	CGO_LDFLAGS="$(CLANG_FLAGS) $(LDFLAGS) -Wl,-soname=libam-go.so -llog -landroid" \
 	CGO_ENABLED=1 \
 	GOOS=android \
 	GOARCH="$(NDK_GO_ARCH_MAP_$(ANDROID_ARCH_NAME))" \
-	$(GO) build -tags 'android,notest,cgo' \
-		-ldflags="-X github.com/amnezia-vpn/amneziawg-go/ipc.socketDirectory=/data/data/$(ANDROID_PACKAGE_NAME)/cache/amneziawg -buildid=" \
+	go build -tags 'android,notest,cgo' \
+		-ldflags="-buildid=" \
 		-trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
-# ---------------------------------------------------------------------------
-# Desktop — note DESKTOP_CGO_CFLAGS (JDK + jni/include)
-# ---------------------------------------------------------------------------
-$(DESTDIR)/libwg-linux-amd64.so:
+
+$(DESTDIR)/libwg-linux-amd64.so: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	@test -f "$(JAVA_HOME)/include/jni.h" || (echo "jni.h not found; JAVA_HOME=$(JAVA_HOME)"; exit 1)
 	@test -f "$(JAVA_HOME)/include/linux/jni_md.h" || (echo "linux/jni_md.h not found"; exit 1)
+	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
 	GOOS=linux GOARCH=amd64 \
-	$(GO) build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
-$(DESTDIR)/libwg-windows-amd64.dll:
+$(DESTDIR)/libwg-windows-amd64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
+	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
 	GOOS=windows GOARCH=amd64 \
 	CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
-	$(GO) build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
-$(DESTDIR)/libwg-windows-arm64.dll:
+$(DESTDIR)/libwg-windows-arm64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
+	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
 	GOOS=windows GOARCH=arm64 \
 	CC=aarch64-w64-mingw32-gcc CXX=aarch64-w64-mingw32-g++ \
-	$(GO) build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
-$(DESTDIR)/libwg-darwin-amd64.dylib:
+$(DESTDIR)/libwg-darwin-amd64.dylib: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
+	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
 	GOOS=darwin GOARCH=amd64 \
-	$(GO) build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
-$(DESTDIR)/libwg-darwin-arm64.dylib:
+$(DESTDIR)/libwg-darwin-arm64.dylib: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
+	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
 	GOOS=darwin GOARCH=arm64 \
-	$(GO) build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
 build_all: \
 	$(foreach plat,$(PLATFORMS),$(DESTDIR)/libwg-$(plat).$(if $(findstring windows,$(plat)),dll,$(if $(findstring darwin,$(plat)),dylib,so)))
 
-# JNI-oriented resource layout (not JNA names — use what your NativeLoader expects)
+
 copy_to_resources: build_all
 	@for plat in $(PLATFORMS); do \
 		os=`echo "$$plat" | cut -d- -f1`; \

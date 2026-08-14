@@ -1,0 +1,194 @@
+From: WG Tunnel
+Date: Thu, 13 Aug 2026 00:00:00 +0000
+Subject: [PATCH] [go1.26.5] runtime: use CLOCK_BOOTTIME in nanotime on Linux
+
+This makes timers account for having expired while the device was
+asleep.
+
+Refreshed for Go 1.26.5 from the historic wireguard-android patch.
+Also covers time.now on linux/amd64, plus riscv64 and loong64.
+
+Fixes golang/go#24595
+
+--- a/src/runtime/sys_linux_386.s
++++ b/src/runtime/sys_linux_386.s
+@@ -365,13 +365,13 @@
+ 
+ 	LEAL	8(SP), BX	// &ts (struct timespec)
+ 	MOVL	BX, 4(SP)
+-	MOVL	$1, 0(SP)	// CLOCK_MONOTONIC
++	MOVL	$7, 0(SP)	// CLOCK_BOOTTIME
+ 	CALL	AX
+ 	JMP finish
+ 
+ fallback:
+ 	MOVL	$SYS_clock_gettime, AX
+-	MOVL	$1, BX		// CLOCK_MONOTONIC
++	MOVL	$7, BX		// CLOCK_BOOTTIME
+ 	LEAL	8(SP), CX
+ 	INVOKE_SYSCALL
+ 
+--- a/src/runtime/sys_linux_amd64.s
++++ b/src/runtime/sys_linux_amd64.s
+@@ -267,7 +267,7 @@
+ 	SUBQ	$16, SP		// Space for results
+ 	ANDQ	$~15, SP	// Align for C code
+ 
+-	MOVL	$1, DI // CLOCK_MONOTONIC
++	MOVL	$7, DI // CLOCK_BOOTTIME
+ 	LEAQ	0(SP), SI
+ 	MOVQ	runtime·vdsoClockgettimeSym(SB), AX
+ 	CMPQ	AX, $0
+--- a/src/runtime/sys_linux_arm.s
++++ b/src/runtime/sys_linux_arm.s
+@@ -11,7 +11,7 @@
+ #include "textflag.h"
+ 
+ #define CLOCK_REALTIME	0
+-#define CLOCK_MONOTONIC	1
++#define CLOCK_BOOTTIME	7
+ 
+ // for EABI, as we don't support OABI
+ #define SYS_BASE 0x0
+@@ -386,7 +386,7 @@
+ 
+ // func nanotime1() int64
+ TEXT runtime·nanotime1(SB),NOSPLIT,$12-8
+-	MOVW	$CLOCK_MONOTONIC, R0
++	MOVW	$CLOCK_BOOTTIME, R0
+ 	MOVW	$spec-12(SP), R1	// timespec
+ 
+ 	MOVW	runtime·vdsoClockgettimeSym(SB), R4
+--- a/src/runtime/sys_linux_arm64.s
++++ b/src/runtime/sys_linux_arm64.s
+@@ -14,7 +14,7 @@
+ #define AT_FDCWD -100
+ 
+ #define CLOCK_REALTIME 0
+-#define CLOCK_MONOTONIC 1
++#define CLOCK_BOOTTIME 7
+ 
+ #define SYS_exit		93
+ #define SYS_read		63
+@@ -352,7 +352,7 @@
+ 	BIC	$15, R1
+ 	MOVD	R1, RSP
+ 
+-	MOVW	$CLOCK_MONOTONIC, R0
++	MOVW	$CLOCK_BOOTTIME, R0
+ 	MOVD	runtime·vdsoClockgettimeSym(SB), R2
+ 	CBZ	R2, fallback
+ 
+--- a/src/runtime/sys_linux_mips64x.s
++++ b/src/runtime/sys_linux_mips64x.s
+@@ -326,7 +326,7 @@
+ 	AND	$~15, R1	// Align for C code
+ 	MOVV	R1, R29
+ 
+-	MOVW	$1, R4 // CLOCK_MONOTONIC
++	MOVW	$7, R4 // CLOCK_BOOTTIME
+ 	MOVV	$0(R29), R5
+ 
+ 	MOVV	runtime·vdsoClockgettimeSym(SB), R25
+@@ -336,7 +336,7 @@
+ 	// see walltime for detail
+ 	BEQ	R2, R0, finish
+ 	MOVV	R0, runtime·vdsoClockgettimeSym(SB)
+-	MOVW	$1, R4 // CLOCK_MONOTONIC
++	MOVW	$7, R4 // CLOCK_BOOTTIME
+ 	MOVV	$0(R29), R5
+ 	JMP	fallback
+ 
+--- a/src/runtime/sys_linux_mipsx.s
++++ b/src/runtime/sys_linux_mipsx.s
+@@ -256,7 +256,7 @@
+ 	RET
+ 
+ TEXT runtime·nanotime1(SB),NOSPLIT,$8-8
+-	MOVW	$1, R4	// CLOCK_MONOTONIC
++	MOVW	$7, R4	// CLOCK_BOOTTIME
+ 	MOVW	$4(R29), R5
+ 	MOVW	$SYS_clock_gettime, R2
+ 	SYSCALL
+--- a/src/runtime/sys_linux_ppc64x.s
++++ b/src/runtime/sys_linux_ppc64x.s
+@@ -299,7 +299,7 @@
+ 	JMP	return
+ 
+ TEXT runtime·nanotime1(SB),NOSPLIT,$16-8
+-	MOVD	$1, R3		// CLOCK_MONOTONIC
++	MOVD	$7, R3		// CLOCK_BOOTTIME
+ 
+ 	MOVD	R1, R15		// R15 is unchanged by C code
+ 	MOVD	g_m(g), R21	// R21 = m
+--- a/src/runtime/sys_linux_s390x.s
++++ b/src/runtime/sys_linux_s390x.s
+@@ -297,7 +297,7 @@
+ 	RET
+ 
+ TEXT runtime·nanotime1(SB),NOSPLIT,$32-8
+-	MOVW	$1, R2			// CLOCK_MONOTONIC
++	MOVW	$7, R2			// CLOCK_BOOTTIME
+ 
+ 	MOVD	R15, R7			// Backup stack pointer
+ 
+--- a/src/runtime/sys_linux_riscv64.s
++++ b/src/runtime/sys_linux_riscv64.s
+@@ -11,7 +11,7 @@
+ 
+ #define AT_FDCWD -100
+ #define CLOCK_REALTIME 0
+-#define CLOCK_MONOTONIC 1
++#define CLOCK_BOOTTIME 7
+ 
+ #define SYS_brk			214
+ #define SYS_clock_gettime	113
+@@ -272,7 +272,7 @@
+ 
+ // func nanotime1() int64
+ TEXT runtime·nanotime1(SB),NOSPLIT,$40-8
+-	MOV	$CLOCK_MONOTONIC, A0
++	MOV	$CLOCK_BOOTTIME, A0
+ 
+ 	MOV	runtime·vdsoClockgettimeSym(SB), A7
+ 	BEQZ	A7, fallback
+--- a/src/runtime/sys_linux_loong64.s
++++ b/src/runtime/sys_linux_loong64.s
+@@ -13,7 +13,7 @@
+ 
+ #define AT_FDCWD	-100
+ #define CLOCK_REALTIME	0
+-#define CLOCK_MONOTONIC	1
++#define CLOCK_BOOTTIME	7
+ 
+ #define SYS_exit		93
+ #define SYS_read		63
+@@ -311,7 +311,7 @@
+ 	AND	$~15, R25	// Align for C code
+ 	MOVV	R25, R3
+ 
+-	MOVW	$CLOCK_MONOTONIC, R4
++	MOVW	$CLOCK_BOOTTIME, R4
+ 	MOVV	$0(R3), R5
+ 
+ 	MOVV	runtime·vdsoClockgettimeSym(SB), R20
+--- a/src/runtime/time_linux_amd64.s
++++ b/src/runtime/time_linux_amd64.s
+@@ -56,7 +56,7 @@
+ 	JEQ	fallback
+ 	CALL	AX
+ 
+-	MOVL	$1, DI // CLOCK_MONOTONIC
++	MOVL	$7, DI // CLOCK_BOOTTIME
+ 	LEAQ	0(SP), SI
+ 	MOVQ	runtime·vdsoClockgettimeSym(SB), AX
+ 	CALL	AX
+@@ -89,7 +89,7 @@
+ 	MOVQ	$SYS_clock_gettime, AX
+ 	SYSCALL
+ 
+-	MOVL	$1, DI // CLOCK_MONOTONIC
++	MOVL	$7, DI // CLOCK_BOOTTIME
+ 	LEAQ	0(SP), SI
+ 	MOVQ	$SYS_clock_gettime, AX
+ 	SYSCALL
