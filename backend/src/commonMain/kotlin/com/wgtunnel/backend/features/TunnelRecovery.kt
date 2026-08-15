@@ -23,7 +23,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -43,6 +42,9 @@ internal class TunnelRecovery(
 
     @OptIn(ExperimentalAtomicApi::class)
     private var lastIpv4FallbackNetworkKey: AtomicReference<String?> = AtomicReference(null)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    private var lastIpv6RecoveryNetworkKey: AtomicReference<String?> = AtomicReference(null)
 
     interface Host {
         fun observe(): Flow<Snapshot>
@@ -248,9 +250,6 @@ internal class TunnelRecovery(
         val activeConfig = host.getActiveConfig() ?: return
         val hasIpv6Peers = activeConfig.hasIpv6Peers()
 
-        // Always record the network key so we never retry light recovery again for this network
-        lastIpv4FallbackNetworkKey.store(snap.activeNetworkKey)
-
         if (!hasIpv6Peers || snap.lastResolvedPeers.isNullOrEmpty()) return
 
         val mismatches =
@@ -258,6 +257,9 @@ internal class TunnelRecovery(
 
         if (mismatches.isEmpty()) return
 
+        // Only pin the network after a real v6→v4 switch so IPv6 recovery can
+        // still run when we were already on IPv4 (or fallback was a no-op).
+        lastIpv4FallbackNetworkKey.store(snap.activeNetworkKey)
         log.i { "Ipv4 Fallback: performing IPv4 fallback peer update for tunnel $tunnelId" }
         val resolved = mode.config.buildResolvedPeers(mismatches)
         host.updatePeers(resolved)
@@ -287,42 +289,125 @@ internal class TunnelRecovery(
         val key = snap.activeNetworkKey
         return snap.networkHasIpv6 &&
             !snap.shouldRecoveryBeActive &&
+            !snap.bootstrapPending &&
             key != null &&
-            key != lastIpv4FallbackNetworkKey.load()
+            key != lastIpv4FallbackNetworkKey.load() &&
+            key != lastIpv6RecoveryNetworkKey.load()
     }
 
+    @OptIn(ExperimentalAtomicApi::class)
+    private fun ipv6SkipReason(snap: Snapshot): String? {
+        if (snap.shouldRecoveryBeActive) return "unhealthy"
+        if (snap.bootstrapPending) return "bootstrap pending"
+        if (!snap.networkHasIpv6) return "network has no ipv6"
+        if (snap.activeNetworkKey == null) return "no network key"
+        if (snap.activeNetworkKey == lastIpv4FallbackNetworkKey.load()) {
+            return "blocked: ipv4 fallback already ran on ${snap.activeNetworkKey}"
+        }
+        if (snap.activeNetworkKey == lastIpv6RecoveryNetworkKey.load()) {
+            return "blocked: already attempted on ${snap.activeNetworkKey}"
+        }
+        return null
+    }
+
+    @OptIn(ExperimentalAtomicApi::class)
     private fun CoroutineScope.runIpv6EndpointRecoveryJob() {
         launch {
-            host.observe().collectLatest { snap ->
-                if (!isIpv6Recoverable(snap)) return@collectLatest
-                delay(stabilizeWindow)
-                val activeConfig = host.getActiveConfig() ?: return@collectLatest
-                if (activeConfig.hasIpv6Peers()) return@collectLatest
-
-                if (snap.lastResolvedPeers.isNullOrEmpty()) return@collectLatest
-
-                val mismatches =
-                    activeConfig.findEndpointMismatches(
-                        snap.lastResolvedPeers,
-                        FamilyOverride.ForceIpv6,
+            val snapshots =
+                host
+                    .observe()
+                    .stateIn(
+                        scope = this,
+                        started = SharingStarted.Eagerly,
+                        initialValue =
+                            Snapshot(
+                                shouldRecoveryBeActive = false,
+                                bootstrapPending = false,
+                                lastResolvedPeers = null,
+                                networkHasIpv6 = false,
+                                activeNetworkKey = null,
+                                deviceAwake = false,
+                            ),
                     )
-                if (mismatches.isEmpty()) return@collectLatest
 
-                log.i { "Ipv6 Recovery: tunnel $tunnelId upgrading to IPv6" }
-                val resolved = mode.config.buildResolvedPeers(mismatches)
-                host.updatePeers(resolved)
-                host.emit(TunnelEvent.RecoveredToIpv6(tunnelId))
+            launch {
+                snapshots.collect { snap ->
+                    if (snap.shouldRecoveryBeActive || !snap.networkHasIpv6) return@collect
+                    ipv6SkipReason(snap)?.let { reason ->
+                        log.d { "IPv6 recovery: skip ($reason) for tunnel $tunnelId" }
+                    }
+                }
+            }
+
+            log.d { "IPv6 recovery job started for tunnel $tunnelId" }
+
+            while (isActive) {
+                val candidate = snapshots.first { isIpv6Recoverable(it) }
+                log.d {
+                    "IPv6 recovery: candidate network=${candidate.activeNetworkKey} " +
+                        "for tunnel $tunnelId"
+                }
+
+                delay(stabilizeWindow)
+
+                val snap = snapshots.value
+                if (!isIpv6Recoverable(snap)) {
+                    log.d { "IPv6 recovery: no longer a candidate after stabilize, waiting" }
+                    continue
+                }
+
+                tryIpv6Upgrade(snap)
+                lastIpv6RecoveryNetworkKey.store(snap.activeNetworkKey)
             }
         }
     }
 
-    companion object {
-        /**
-         * Extra wait after a stabilize window before a full bounce, so failure is sustained beyond
-         * a single WireGuard handshake/keepalive cycle
-         */
-        const val TUNNEL_FAILURE_THRESHOLD_MILLIS = 15_000L
+    private suspend fun tryIpv6Upgrade(snap: Snapshot) {
+        val activeConfig =
+            host.getActiveConfig()
+                ?: run {
+                    log.d { "IPv6 recovery: no active config for tunnel $tunnelId" }
+                    return
+                }
 
+        var dns = snap.lastResolvedPeers
+        var mismatches =
+            if (!dns.isNullOrEmpty()) {
+                activeConfig.findEndpointMismatches(dns, FamilyOverride.ForceIpv6)
+            } else {
+                emptyMap()
+            }
+
+        // Cached bootstrap from a v4-only network may have no AAAA. Fresh
+        // resolve is safe here: DDNS/seamless/ipv4 fallback only run while
+        // unhealthy, and this job only runs while healthy.
+        if (mismatches.isEmpty()) {
+            val fresh =
+                host.resolveFresh()
+                    ?: run {
+                        log.d { "IPv6 recovery: no IPv6 endpoints available for tunnel $tunnelId" }
+                        return
+                    }
+            host.updateActiveTunnel { it.copy(lastBootstrapResolution = fresh) }
+            dns = fresh.peerKeyResults
+            mismatches = activeConfig.findEndpointMismatches(dns, FamilyOverride.ForceIpv6)
+        }
+
+        if (mismatches.isEmpty()) {
+            log.d {
+                "IPv6 recovery: all upgradable peers already on the chosen IPv6 host " +
+                    "(or no AAAA) for tunnel $tunnelId"
+            }
+            return
+        }
+
+        log.i { "Ipv6 Recovery: tunnel $tunnelId upgrading ${mismatches.size} peer(s) to IPv6" }
+        val resolved = mode.config.buildResolvedPeers(mismatches)
+        host.updatePeers(resolved)
+        host.emit(TunnelEvent.RecoveredToIpv6(tunnelId))
+    }
+
+    companion object {
         /** Quiet period after becoming unhealthy to give tunnel time to stabilize */
         const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 8_000L
 
