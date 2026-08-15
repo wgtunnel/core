@@ -38,6 +38,7 @@ type WrapperTUN struct {
 	fakeDNSv4        netip.Addr
 	fakeDNSv6        netip.Addr
 	foreignDNSPolicy string
+	passthroughDNS   map[netip.Addr]struct{}
 
 	dnsSem chan struct{}
 
@@ -55,6 +56,7 @@ func NewWrapperTUN(
 	fakeDNSv4 string,
 	fakeDNSv6 string,
 	foreignDnsPolicy string,
+	passthrough []netip.Addr,
 ) (*WrapperTUN, error) {
 	if dnsEngine == nil {
 		return nil, fmt.Errorf("filtering tun: dns engine is nil")
@@ -70,12 +72,19 @@ func NewWrapperTUN(
 			return nil, fmt.Errorf("filtering tun: invalid fake DNS v6 %q", fakeDNSv6)
 		}
 	}
+	pass := make(map[netip.Addr]struct{}, len(passthrough))
+	for _, a := range passthrough {
+		if a.IsValid() {
+			pass[a] = struct{}{}
+		}
+	}
 	return &WrapperTUN{
 		realTUN:          real,
 		dns:              dnsEngine,
 		fakeDNSv4:        v4,
 		fakeDNSv6:        v6, // zero Addr if unused — IsValid() == false
 		foreignDNSPolicy: foreignDnsPolicy,
+		passthroughDNS:   pass,
 		dnsSem:           make(chan struct{}, maxInFlightDNS),
 		cache:            make(map[string]cacheEntry),
 	}, nil
@@ -135,8 +144,11 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		return false
 	}
 
-	// TCP/53, drop unless allowed
+	// TCP/53 is plain DNS-over-TCP, only allow if it is a system-tunnel FakeDNS upstream.
 	if p.Protocol == 6 && p.DstPort == 53 {
+		if _, ok := f.passthroughDNS[p.DstIP]; ok {
+			return false
+		}
 		if f.foreignDNSPolicy == "allow" {
 			return false
 		}
@@ -145,6 +157,10 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 	}
 
 	if p.Protocol != 17 || p.DstPort != 53 {
+		return false
+	}
+
+	if _, ok := f.passthroughDNS[p.DstIP]; ok {
 		return false
 	}
 

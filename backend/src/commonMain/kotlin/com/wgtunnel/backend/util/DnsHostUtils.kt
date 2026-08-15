@@ -134,7 +134,10 @@ object DnsHostUtils {
             if (port != null && port in 1..65535) return ip
         }
 
-        if (ip.contains(':')) return ip
+        // Bare IPv6, native dialer requires [addr]:port
+        if (ip.contains(':')) {
+            return "[$ip]:$defaultPort"
+        }
 
         return "$ip:$defaultPort"
     }

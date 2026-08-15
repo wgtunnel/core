@@ -68,7 +68,7 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 		return -1
 	}
 
-	deviceTUN, err := tunwrap.MaybeWrapTUN(tun, dnsConfig)
+	deviceTUN, err := tunwrap.MaybeWrapTUNDial(tun, dnsConfig, tnet.DialContext)
 	if err != nil {
 		log.Error(tag, "DNS wrap: %v", err)
 		return -1

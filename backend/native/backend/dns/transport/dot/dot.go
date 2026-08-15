@@ -12,10 +12,11 @@ import (
 )
 
 type Transport struct {
-	Servers    []string // should be pre-resolved
-	ServerName string   // TLS SNI
-	Timeout    time.Duration
-	Dialer     *net.Dialer
+	Servers     []string // should be pre-resolved
+	ServerName  string   // TLS SNI
+	Timeout     time.Duration
+	Dialer      *net.Dialer
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 
 	client *dns.Client
 }
@@ -57,7 +58,13 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 
 	var lastErr error
 	for _, server := range t.Servers {
-		m, _, err := t.client.ExchangeContext(ctx, msg, server)
+		var m *dns.Msg
+		var err error
+		if t.DialContext != nil {
+			m, err = t.exchangeDial(ctx, msg, server)
+		} else {
+			m, _, err = t.client.ExchangeContext(ctx, msg, server)
+		}
 		if err != nil {
 			lastErr = err
 			continue
@@ -72,6 +79,27 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 		lastErr = fmt.Errorf("dot: all servers failed")
 	}
 	return nil, lastErr
+}
+
+func (t *Transport) exchangeDial(ctx context.Context, msg *dns.Msg, server string) (*dns.Msg, error) {
+	raw, err := t.DialContext(ctx, "tcp", server)
+	if err != nil {
+		return nil, err
+	}
+	tlsConn := tls.Client(raw, &tls.Config{
+		ServerName: t.ServerName,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	defer tlsConn.Close()
+	conn := &dns.Conn{Conn: tlsConn}
+	if err := conn.WriteMsg(msg); err != nil {
+		return nil, err
+	}
+	return conn.ReadMsg()
 }
 
 func (t *Transport) Close() error { return nil }

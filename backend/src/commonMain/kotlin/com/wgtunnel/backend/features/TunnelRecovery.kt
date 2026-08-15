@@ -281,6 +281,7 @@ internal class TunnelRecovery(
                         lastRecoveryAttemptMs = System.currentTimeMillis(),
                     )
                 }
+                host.emit(TunnelEvent.SeamlessRecoveryAttempted(tunnelId))
             }
         }
 

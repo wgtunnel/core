@@ -367,22 +367,17 @@ class TunnelBackend(
             val runtimeTunnelDnsConfig = active.getRuntimeTunnelDnsConfig()
 
             return try {
-                val bounced =
-                    when {
-                        !mode.config.hasDynamicEndpoints() -> {
-                            restartWithCurrentMode(handle, tunnel, mode, runtimeTunnelDnsConfig)
-                        }
-                        !withFreshResolution -> {
-                            bounceActiveConfig(handle, tunnel, mode, runtimeTunnelDnsConfig)
-                        }
-                        else -> {
-                            bounceWithFreshDns(handle, tunnel, mode, runtimeTunnelDnsConfig)
-                        }
+                when {
+                    !mode.config.hasDynamicEndpoints() -> {
+                        restartWithCurrentMode(handle, tunnel, mode, runtimeTunnelDnsConfig)
                     }
-                if (bounced) {
-                    _events.emit(TunnelEvent.SeamlessRecoveryAttempted(tunnelId))
+                    !withFreshResolution -> {
+                        bounceActiveConfig(handle, tunnel, mode, runtimeTunnelDnsConfig)
+                    }
+                    else -> {
+                        bounceWithFreshDns(handle, tunnel, mode, runtimeTunnelDnsConfig)
+                    }
                 }
-                bounced
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
@@ -588,7 +583,20 @@ class TunnelBackend(
 
     override suspend fun setKillSwitch(config: KillSwitchConfig) = runCatching {
         runtimeManager.setKillSwitch(config)
-        _status.update { it.copy(killSwitch = it.killSwitch.copy(enabled = true, config = config)) }
+        _status.update { current ->
+            current.copy(
+                killSwitch = current.killSwitch.copy(enabled = true, config = config),
+                activeTunnels =
+                    current.activeTunnels.mapValues { (_, tunnel) ->
+                        val mode = tunnel.mode
+                        if (mode is BackendMode.Proxy.KillSwitchPrimary) {
+                            tunnel.copy(mode = mode.copy(killSwitchConfig = config))
+                        } else {
+                            tunnel
+                        }
+                    },
+            )
+        }
     }
 
     override suspend fun disableKillSwitch() = runCatching {
@@ -712,7 +720,8 @@ class TunnelBackend(
                                                         Tunnel.IpStrategy.PreferIpv6,
                                         ),
                                     failureThreshold =
-                                        TunnelRecovery.TUNNEL_FAILURE_THRESHOLD_MILLIS.milliseconds,
+                                        TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
+                                            .milliseconds,
                                     stabilizeWindow =
                                         TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
                                             .milliseconds,

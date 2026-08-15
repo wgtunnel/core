@@ -46,6 +46,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     private val shutdownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var hevBridgeJob: Job? = null
     @Volatile private var hevBridgeFd: ParcelFileDescriptor? = null
+    @Volatile private var hevBridgeTarget: HevBridgeTarget? = null
     @Volatile private var vpnTunFd: ParcelFileDescriptor? = null
 
     @Volatile internal var currentKillSwitchConfig: KillSwitchConfig? = null
@@ -185,9 +186,11 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     }
 
     private fun disableKillSwitch() {
+        stopHevSocks5Bridge()
         hevBridgeFd?.close()
         hevBridgeFd = null
         currentKillSwitchConfig = null
+        isKillSwitchActive = false
     }
 
     fun setKillSwitch(config: KillSwitchConfig?) {
@@ -198,9 +201,11 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
             return
         }
 
-        hevBridgeFd?.close()
         val intent = provider.createVpnConfigurePendingIntent(this@VpnService)
-        hevBridgeFd =
+        // Establish the replacement TUN first so a failed rebuild leaves the
+        // existing session and hev intact. Android replaces the VPN session
+        // on a successful establish, which invalidates the old fd.
+        val newFd =
             Builder()
                 .apply {
                     setSession(LOCKDOWN_SESSION_NAME)
@@ -224,9 +229,21 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                     addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
                     if (config.dualStack) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
                 }
-                .establish()
+                .establish() ?: throw IOException("Failed to establish kill switch TUN")
+
+        log.d {
+            "Kill switch TUN replaced (dualStack=${config.dualStack}, metered=${config.metered}, " +
+                "allowedIps=${config.allowedIps.size}); rebinding HEV to the new fd"
+        }
+        val oldFd = hevBridgeFd
+        // HEV is bound to the previous VpnService fd. Stop the native bridge
+        // so we can attach it to the new fd
+        stopHevNative()
+        oldFd?.close()
+        hevBridgeFd = newFd
         isKillSwitchActive = true
         currentKillSwitchConfig = config
+        rebindHevSocks5Bridge()
     }
 
     override suspend fun createTunInterface(tunnel: Tunnel, config: Config, fakeDns: Boolean) {
@@ -326,11 +343,18 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     }
 
     override fun startHevSocks5Bridge(port: Int, password: String) {
+        hevBridgeTarget = HevBridgeTarget(port, password)
         if (hevBridgeJob != null) return
         hevBridgeJob = startHevBridge(port, password)
     }
 
     override fun stopHevSocks5Bridge() {
+        stopHevNative()
+        hevBridgeTarget = null
+    }
+
+    // Stop HEV without dropping the live SOCKS target so a KS TUN replace can reattach.
+    private fun stopHevNative() {
         hevBridgeJob?.cancel()
         hevBridgeJob = null
 
@@ -339,6 +363,16 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         } catch (e: Exception) {
             log.w(e) { "TProxyStopService failed, may already be stopped" }
         }
+    }
+
+    private fun rebindHevSocks5Bridge() {
+        val target = hevBridgeTarget ?: return
+        if (hevBridgeFd == null) {
+            log.w { "Cannot rebind HEV: kill switch fd is missing" }
+            return
+        }
+        log.d { "Rebinding HEV bridge to new kill switch fd on SOCKS port ${target.port}" }
+        hevBridgeJob = startHevBridge(target.port, target.password)
     }
 
     override fun bypass(fd: Int): Int {
@@ -365,6 +399,8 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                 }
             context.startService(intent)
         }
+
+        private data class HevBridgeTarget(val port: Int, val password: String)
 
         private const val LOCKDOWN_SESSION_NAME = "Lockdown"
         private const val LOCALHOST = "127.0.0.1"

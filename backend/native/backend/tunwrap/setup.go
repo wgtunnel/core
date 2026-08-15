@@ -12,7 +12,8 @@ import (
 
 // Setup builds the hijack DNS engine.
 // local may be nil unless cfg needs local (defaultTransport=="local" or LocalSuffixes).
-func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport) (*dns.Engine, error) {
+// dial, when set, is used for doh/dot/plain upstreams (lockdown/proxy netstack).
+func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport, dial DialContextFunc) (*dns.Engine, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -32,11 +33,17 @@ func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport) (*dns.Engine, er
 
 	switch cfg.DefaultTransport {
 	case "doh":
-		eng.RegisterTransport("doh", doh.New(cfg.Upstream, cfg.ServerName))
+		t := doh.New(cfg.Upstream, cfg.ServerName)
+		t.DialContext = dial
+		eng.RegisterTransport("doh", t)
 	case "dot":
-		eng.RegisterTransport("dot", dot.New(cfg.Upstream, cfg.ServerName))
+		t := dot.New(cfg.Upstream, cfg.ServerName)
+		t.DialContext = dial
+		eng.RegisterTransport("dot", t)
 	case "plain":
-		eng.RegisterTransport("plain", plain.New(cfg.Upstream, "udp"))
+		t := plain.New(cfg.Upstream, "udp")
+		t.DialContext = dial
+		eng.RegisterTransport("plain", t)
 	case "local":
 		// only "local"
 	}
