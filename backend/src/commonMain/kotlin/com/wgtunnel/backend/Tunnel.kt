@@ -34,6 +34,16 @@ interface Tunnel {
                 }
             }
         }
+
+        fun toNativeCode(): Int {
+            return when (this) {
+                is Up.Healthy -> 0
+                is Up.HandshakeFailure -> 1
+                is Down -> 99
+                is Starting,
+                is Stopping -> -1
+            }
+        }
     }
 
     sealed interface IpStrategy {

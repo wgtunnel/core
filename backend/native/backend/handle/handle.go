@@ -1,5 +1,6 @@
 package handle
 
+import "C"
 import (
 	"fmt"
 	"math"
@@ -12,6 +13,8 @@ var (
 	nextHandle  int32
 )
 
+// GenerateUniqueHandle reserves a free handle id. Caller owns it until
+// ReleaseHandle, or until a successful startVpn/startProxy takes ownership
 func GenerateUniqueHandle() (int32, error) {
 	handleMu.Lock()
 	defer handleMu.Unlock()
@@ -29,6 +32,7 @@ func GenerateUniqueHandle() (int32, error) {
 	return -1, fmt.Errorf("no free handles available")
 }
 
+// ReleaseHandle frees a previously reserved handle. Safe to call more than once.
 func ReleaseHandle(handle int32) {
 	if handle < 0 {
 		return
@@ -36,4 +40,27 @@ func ReleaseHandle(handle int32) {
 	handleMu.Lock()
 	delete(usedHandles, handle)
 	handleMu.Unlock()
+}
+
+func IsReserved(handle int32) bool {
+	if handle < 0 {
+		return false
+	}
+	handleMu.Lock()
+	defer handleMu.Unlock()
+	return usedHandles[handle]
+}
+
+//export allocateTunnelHandle
+func allocateTunnelHandle() int32 {
+	h, err := GenerateUniqueHandle()
+	if err != nil {
+		return -1
+	}
+	return h
+}
+
+//export releaseTunnelHandle
+func releaseTunnelHandle(handle int32) {
+	ReleaseHandle(handle)
 }

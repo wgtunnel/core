@@ -2,6 +2,7 @@ package com.wgtunnel.backend
 
 internal object ProxyBackend {
     external fun startProxy(
+        handle: Int,
         ifName: String,
         config: String,
         uapiPath: String,

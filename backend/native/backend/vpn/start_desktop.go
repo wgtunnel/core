@@ -185,6 +185,7 @@ func takePending(ifName string) (tun.Device, router.Router, error) {
 
 //export startVpn
 func startVpn(
+	handle int32,
 	ifName string,
 	_tunFd int32,
 	config string,
@@ -203,8 +204,8 @@ func startVpn(
 		return -1
 	}
 
-	id := startVpnDevice(ifName, tunDev, config, dnsConfig, uapiPath)
-	if id < 0 {
+	rc := startVpnDevice(handle, ifName, tunDev, config, dnsConfig, uapiPath)
+	if rc < 0 {
 		if rt != nil {
 			_ = rt.Close()
 		}
@@ -222,9 +223,9 @@ func startVpn(
 	}
 
 	desktopMu.Lock()
-	desktopExtras[id] = &desktopTunnelExtras{router: rt}
+	desktopExtras[handle] = &desktopTunnelExtras{router: rt}
 	desktopMu.Unlock()
-	return id
+	return 0
 }
 
 // called from shared awgTurnOff after device close

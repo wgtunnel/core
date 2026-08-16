@@ -7,9 +7,9 @@ import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.PeerSection
 
 internal interface TunnelEngine {
-
     suspend fun start(
         tunnelId: Int,
+        handle: Int,
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig? = null,
     ): EngineStartResult

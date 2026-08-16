@@ -20,6 +20,7 @@ import (
 	"github.com/wgtunnel/backend/ipc"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/roaming"
+	"github.com/wgtunnel/backend/statusnotify"
 	"github.com/wgtunnel/backend/tunwrap"
 )
 
@@ -31,20 +32,26 @@ type TunnelHandle struct {
 }
 
 var (
-	tunnelHandles    = make(map[int32]TunnelHandle)
-	lastTunnelStatus sync.Map
-	tunnelMu         sync.RWMutex
+	tunnelHandles = make(map[int32]TunnelHandle)
+	tunnelMu      sync.RWMutex
 )
 
-// startDevice assumes tun is already created
-// Bind and roaming come from platform files
+// startVpnDevice assumes tun is already created and tunHandle was already allocated.
+// On failure the handle is left reserved and the caller must release it.
+// On success ownership transfers to the tunnel map and stopVpn releases it.
 func startVpnDevice(
+	tunHandle int32,
 	interfaceName string,
 	baseTun tun.Device,
 	settings string,
 	dnsConfigJSON string,
 	uapiPath string,
 ) int32 {
+	if tunHandle < 0 || !hand.IsReserved(tunHandle) {
+		log.Error(tag, "startVpnDevice: invalid/unreserved handle %d", tunHandle)
+		return -1
+	}
+
 	log.Debug(tag, "DNS config passed: %s", dnsConfigJSON)
 
 	tun, err := tunwrap.MaybeWrapTUN(baseTun, dnsConfigJSON)
@@ -61,22 +68,9 @@ func startVpnDevice(
 		return -1
 	}
 
-	tunHandle, err := hand.GenerateUniqueHandle()
-	if err != nil {
-		log.Error(tag, "Unable to generate handle: %v", err)
-		tun.Close()
-		return -1
-	}
-
 	statusCB := func(code device.StatusCode) {
-		key := tunHandle
-		if prev, loaded := lastTunnelStatus.LoadOrStore(key, code); loaded {
-			if prev == code {
-				return
-			}
-			lastTunnelStatus.Store(key, code)
-		}
-		go C.notifyStatus(C.int32_t(tunHandle), C.int32_t(code))
+		// Report to Kotlin with at-least-once delivery until Kotlin acks.
+		statusnotify.Report(tunHandle, int32(code))
 	}
 
 	tunDevice := device.NewDevice(
@@ -91,14 +85,12 @@ func startVpnDevice(
 	ipcRequest, err := wireproxyawg.CreateIPCRequest(conf.Device, false)
 	if err != nil {
 		log.Error(tag, "CreateIPCRequest: %v", err)
-		hand.ReleaseHandle(tunHandle)
 		tunDevice.Close()
 		return -1
 	}
 
 	if err := tunDevice.IpcSet(ipcRequest.IpcRequest); err != nil {
 		log.Error(tag, "IpcSet: %v", err)
-		hand.ReleaseHandle(tunHandle)
 		tunDevice.Close()
 		return -1
 	}
@@ -126,7 +118,6 @@ func startVpnDevice(
 		if uapi != nil {
 			uapi.Close()
 		}
-		hand.ReleaseHandle(tunHandle)
 		tunDevice.Close()
 		return -1
 	}
@@ -135,7 +126,7 @@ func startVpnDevice(
 	tunnelMu.Lock()
 	tunnelHandles[tunHandle] = TunnelHandle{device: tunDevice, uapi: uapi}
 	tunnelMu.Unlock()
-	return tunHandle
+	return 0
 }
 
 //export updateVpnTunnelPeers
@@ -187,10 +178,11 @@ func stopVpn(handle int32) {
 	if tunHandle.device != nil {
 		tunHandle.device.Close()
 	}
-	lastTunnelStatus.Delete(handle)
+	statusnotify.Clear(handle)
 	OnTunnelStopped(handle)
 	hand.ReleaseHandle(handle)
-	C.notifyStatus(C.int32_t(handle), C.int32_t(constants.StatusStop))
+	// Terminal stop: one-shot notify (Kotlin acks Down when applied).
+	statusnotify.NotifyOnce(handle, int32(constants.StatusStop))
 }
 
 //export getVpnConfig

@@ -11,6 +11,7 @@ import (
 
 //export startVpn
 func startVpn(
+	handle int32,
 	ifName string,
 	tunFd int32,
 	config string,
@@ -25,6 +26,7 @@ func startVpn(
 	}
 	_ = name
 	return startVpnDevice(
+		handle,
 		ifName,
 		realTUN,
 		config,

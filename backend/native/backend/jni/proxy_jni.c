@@ -3,9 +3,9 @@
 #include <string.h>
 #include "include/vpn_jni.h"
 
-extern int32_t startProxy(struct go_string ifName, struct go_string config,
-                          struct go_string uapiPath, int32_t bypass,
-                          struct go_string dnsConfig);
+extern int32_t startProxy(int32_t handle, struct go_string ifName,
+                          struct go_string config, struct go_string uapiPath,
+                          int32_t bypass, struct go_string dnsConfig);
 extern int32_t updateProxyTunnelPeers(int32_t handle, struct go_string config);
 extern void turnProxyTunnelOff(int32_t handle);
 extern char *getProxyConfig(int32_t handle);
@@ -13,7 +13,7 @@ extern char *getProxyConfig(int32_t handle);
 JNIEXPORT jint JNICALL
 Java_com_wgtunnel_backend_ProxyBackend_startProxy(
         JNIEnv *env, jclass c,
-        jstring ifName, jstring config, jstring uapiPath,
+        jint handle, jstring ifName, jstring config, jstring uapiPath,
         jint bypass, jstring dnsConfigJson)
 {
     const char *if_p = NULL, *cfg_p = NULL, *uapi_p = NULL, *dns_p = NULL;
@@ -26,7 +26,7 @@ Java_com_wgtunnel_backend_ProxyBackend_startProxy(
     uapi_g = jstring_to_go(env, uapiPath, &uapi_p);
     dns_g = jstring_to_go(env, dnsConfigJson, &dns_p);
 
-    ret = startProxy(if_g, cfg_g, uapi_g, (int32_t)bypass, dns_g);
+    ret = startProxy((int32_t)handle, if_g, cfg_g, uapi_g, (int32_t)bypass, dns_g);
 
     release_jstring(env, ifName, if_p);
     release_jstring(env, config, cfg_p);

@@ -7,9 +7,12 @@
 extern void stopVpn(int handle);
 extern char *getVpnConfig(int handle);
 extern char *version(void);
-extern int startVpn(struct go_string ifname, int tun_fd, struct go_string config,
-                  struct go_string dnsconfig, struct go_string uapipath);
+extern int startVpn(int handle, struct go_string ifname, int tun_fd,
+                  struct go_string config, struct go_string dnsconfig,
+                  struct go_string uapipath);
 extern int updateVpnTunnelPeers(int handle, struct go_string config);
+extern int32_t allocateTunnelHandle(void);
+extern void releaseTunnelHandle(int32_t handle);
 
 static JavaVM *g_vm;
 static jobject g_status_cb;
@@ -171,10 +174,40 @@ Java_com_wgtunnel_backend_TunnelBackend_setStatusCallback(
     }
 }
 
+/* Kotlin acknowledges that it applied this status code for the tunnel handle. */
+extern void ackTunnelStatus(int32_t handle, int32_t code);
+
+JNIEXPORT void JNICALL
+Java_com_wgtunnel_backend_TunnelBackend_ackStatus(
+        JNIEnv *env, jclass c, jint handle, jint code)
+{
+    (void)env;
+    (void)c;
+    ackTunnelStatus((int32_t)handle, (int32_t)code);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_TunnelBackend_allocateTunnelHandle(
+        JNIEnv *env, jclass c)
+{
+    (void)env;
+    (void)c;
+    return (jint)allocateTunnelHandle();
+}
+
+JNIEXPORT void JNICALL
+Java_com_wgtunnel_backend_TunnelBackend_releaseTunnelHandle(
+        JNIEnv *env, jclass c, jint handle)
+{
+    (void)env;
+    (void)c;
+    releaseTunnelHandle((int32_t)handle);
+}
+
 JNIEXPORT jint JNICALL
 Java_com_wgtunnel_backend_VpnBackend_turnOn(
         JNIEnv *env, jclass c,
-        jstring ifname, jint tun_fd, jstring settings,
+        jint handle, jstring ifname, jint tun_fd, jstring settings,
         jstring dnsConfigJson, jstring uapiPath)
 {
     const char *if_p = NULL, *set_p = NULL, *dns_p = NULL, *uapi_p = NULL;
@@ -187,7 +220,7 @@ Java_com_wgtunnel_backend_VpnBackend_turnOn(
     dns_g = jstring_to_go(env, dnsConfigJson, &dns_p);
     uapi_g = jstring_to_go(env, uapiPath, &uapi_p);
 
-    ret = startVpn(if_g, (int)tun_fd, set_g, dns_g, uapi_g);
+    ret = startVpn((int)handle, if_g, (int)tun_fd, set_g, dns_g, uapi_g);
 
     release_jstring(env, ifname, if_p);
     release_jstring(env, settings, set_p);

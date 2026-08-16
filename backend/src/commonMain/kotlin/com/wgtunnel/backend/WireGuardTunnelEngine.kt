@@ -25,6 +25,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
 
     override suspend fun start(
         tunnelId: Int,
+        handle: Int,
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig?,
     ): EngineStartResult {
@@ -52,42 +53,45 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
             json.encodeToString(TunnelDnsConfig.serializer(), it)
         }
 
-        val handle =
-            when (mode) {
-                is BackendMode.Proxy.KillSwitchPrimary -> {
-                    val proxyConfig = buildBridgeProxyConfig()
-                    startProxyTunnel(ifName, mode.config, proxyConfig, withBridge = true, dnsJson)
-                }
-                is BackendMode.Proxy.Standard -> {
-                    mode.proxyConfig.socks5?.port?.let { port ->
-                        if (!PortUtils.isTcpPortAvailable(port)) {
-                            throw BackendException.Socks5PortUnavailable(
-                                "SOCKS5 port $port is already in use.",
-                                port,
-                            )
-                        }
-                    }
-                    mode.proxyConfig.http?.port?.let { port ->
-                        if (!PortUtils.isTcpPortAvailable(port)) {
-                            throw BackendException.HttpPortUnavailable(
-                                "HTTP listener port $port is already in use.",
-                                port,
-                            )
-                        }
-                    }
-                    startProxyTunnel(
-                        ifName,
-                        mode.config,
-                        mode.proxyConfig,
-                        withBridge = false,
-                        dnsJson,
-                    )
-                }
-                is BackendMode.Vpn -> startVpnTunnel(tunnelId, ifName, mode.config, dnsJson)
+        when (mode) {
+            is BackendMode.Proxy.KillSwitchPrimary -> {
+                val proxyConfig = buildBridgeProxyConfig()
+                startProxyTunnel(
+                    handle,
+                    ifName,
+                    mode.config,
+                    proxyConfig,
+                    withBridge = true,
+                    dnsJson,
+                )
             }
-
-        if (handle < 0) {
-            throw BackendException.InternalError("Native start failed: $handle")
+            is BackendMode.Proxy.Standard -> {
+                mode.proxyConfig.socks5?.port?.let { port ->
+                    if (!PortUtils.isTcpPortAvailable(port)) {
+                        throw BackendException.Socks5PortUnavailable(
+                            "SOCKS5 port $port is already in use.",
+                            port,
+                        )
+                    }
+                }
+                mode.proxyConfig.http?.port?.let { port ->
+                    if (!PortUtils.isTcpPortAvailable(port)) {
+                        throw BackendException.HttpPortUnavailable(
+                            "HTTP listener port $port is already in use.",
+                            port,
+                        )
+                    }
+                }
+                startProxyTunnel(
+                    handle,
+                    ifName,
+                    mode.config,
+                    mode.proxyConfig,
+                    withBridge = false,
+                    dnsJson,
+                )
+            }
+            is BackendMode.Vpn -> startVpnTunnel(tunnelId, handle, ifName, mode.config, dnsJson)
         }
 
         return EngineStartResult(
@@ -129,10 +133,11 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
 
     private suspend fun startVpnTunnel(
         tunnelId: Int,
+        handle: Int,
         ifName: String,
         config: Config,
         dnsConfigJson: String?,
-    ): Int {
+    ) {
         runtimeManager.getOrCreateVpnRuntime()
         val tunFd =
             if (runtimeManager.vpnUsesOsTunFd) {
@@ -141,50 +146,57 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
             } else {
                 -1
             }
-        val handle =
+        val rc =
             VpnBackend.turnOn(
+                handle,
                 ifName,
                 tunFd,
                 config.asQuickString(),
                 dnsConfigJson,
                 runtimeManager.uapiPath,
             )
-        if (handle < 0) {
+        if (rc < 0) {
             runCatching { runtimeManager.destroyVpnRuntime(listOf(tunnelId)) }
-            throw BackendException.InternalError("Internal native error with code: $handle")
+            throw BackendException.InternalError("Internal native error with code: $rc")
         }
-        return handle
     }
 
     private suspend fun startProxyTunnel(
+        handle: Int,
         ifName: String,
         config: Config,
         proxyConfig: ProxyConfig,
         withBridge: Boolean,
         dnsConfigJson: String?,
-    ): Int {
+    ) {
         val quickConfig = buildProxiedQuickString(config, proxyConfig)
-        val handle =
+        val rc =
             ProxyBackend.startProxy(
+                handle,
                 ifName,
                 quickConfig,
                 runtimeManager.uapiPath,
                 if (withBridge) 1 else 0,
                 dnsConfigJson,
             )
-        if (handle < 0) {
+        if (rc < 0) {
             throw BackendException.InternalError("Internal native error")
         }
         if (withBridge) {
-            val port =
-                proxyConfig.socks5?.port
-                    ?: throw BackendException.InternalError("Bridge port not set")
-            val pass =
-                proxyConfig.socks5.password
-                    ?: throw BackendException.InternalError("Bridge pass not set")
-            runtimeManager.getOrCreateVpnRuntime().startHevSocks5Bridge(port, pass)
+            try {
+                val port =
+                    proxyConfig.socks5?.port
+                        ?: throw BackendException.InternalError("Bridge port not set")
+                val pass =
+                    proxyConfig.socks5.password
+                        ?: throw BackendException.InternalError("Bridge pass not set")
+                runtimeManager.getOrCreateVpnRuntime().startHevSocks5Bridge(port, pass)
+            } catch (t: Throwable) {
+                // Native start already took ownership; tear down so the caller can release cleanly.
+                runCatching { ProxyBackend.turnProxyTunnelOff(handle) }
+                throw t
+            }
         }
-        return handle
     }
 
     private fun buildBridgeProxyConfig(): ProxyConfig =

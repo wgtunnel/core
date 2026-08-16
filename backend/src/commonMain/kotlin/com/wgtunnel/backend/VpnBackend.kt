@@ -6,6 +6,7 @@ internal object VpnBackend {
     external fun turnOff(handle: Int)
 
     external fun turnOn(
+        handle: Int,
         ifName: String,
         tunFd: Int,
         settings: String,

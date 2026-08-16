@@ -7,6 +7,7 @@ import com.wgtunnel.backend.dns.SystemDnsResolver
 import com.wgtunnel.backend.dns.UnderlayNetworkSynchronizer
 import com.wgtunnel.backend.enums.FamilyOverride
 import com.wgtunnel.backend.event.TunnelEvent
+import com.wgtunnel.backend.exception.BackendException
 import com.wgtunnel.backend.exception.ShellException
 import com.wgtunnel.backend.features.ActiveConfigMonitor
 import com.wgtunnel.backend.features.TunnelRecovery
@@ -84,10 +85,10 @@ class TunnelBackend(
     private val pendingResolutionJobs = ConcurrentHashMap<Int, Job>()
 
     /**
-     * Native status can fire before onEngineResult maps the handle and native won't emit duplicated
-     * so we buffer the latest status per handle and apply it as soon as the handle is registered.
+     * Handles for which native start succeeded. stopVpn/turnProxyTunnelOff releases those; any
+     * other reserved handle must be released via [releaseTunnelHandle].
      */
-    private val pendingStatusByHandle = ConcurrentHashMap<Int, Tunnel.State>()
+    private val nativeOwnedHandles = ConcurrentHashMap.newKeySet<Int>()
 
     init {
         loadBackendNativeLibrary()
@@ -108,38 +109,30 @@ class TunnelBackend(
         )
 
     override fun onStatus(handle: Int, code: Int) {
-        val state = Tunnel.State.fromNative(code) ?: return
+        val state = Tunnel.State.fromNative(code)
+        if (state == null) {
+            log.w { "onStatus: unknown code=$code handle=$handle — acking" }
+            ackStatus(handle, code)
+            return
+        }
+
         val tunnelId = byHandle[handle]
         if (tunnelId != null) {
-            pendingStatusByHandle.remove(handle)
             applyTransportState(tunnelId, state)
+            log.d { "onStatus: applied handle=$handle code=$code tunnelId=$tunnelId state=$state" }
+            ackStatus(handle, code)
             return
         }
 
-        // For down/stop we always drop any pending for this handle
-        if (state is Tunnel.State.Down) {
-            pendingStatusByHandle.remove(handle)
-            return
-        }
-
-        // For an unmapped non-Down status, we only buffer if a tunnel is still waiting for handle
-        val awaitingHandle =
-            _status.value.activeTunnels.any { (_, t) -> t.transportState is Tunnel.State.Starting }
-        if (!awaitingHandle) {
-            pendingStatusByHandle.remove(handle)
-            return
-        }
-
-        pendingStatusByHandle[handle] = state
-
-        // Handle may have been registered between the null check and the store.
-        val registeredId = byHandle[handle] ?: return
-        pendingStatusByHandle.remove(handle)?.let { applyTransportState(registeredId, it) }
+        // Unmapped handle: nothing to apply. Ack so native stops re-notifying.
+        log.w { "onStatus: unmapped handle=$handle code=$code state=$state — acking" }
+        ackStatus(handle, code)
     }
 
     private fun applyTransportState(tunnelId: Int, state: Tunnel.State) {
         val current = _status.value.activeTunnels[tunnelId]?.transportState
         if (current != state) {
+            log.i { "transportState tunnelId=$tunnelId $current → $state" }
             updateTunnelTransportState(tunnelId, state)
         }
     }
@@ -188,21 +181,52 @@ class TunnelBackend(
             .onFailure { cleanup(tunnel.id) }
     }
 
-    /**
-     * Engine start needs to not outlive Kotlin handle tracking. If a bootstrap job is canceled
-     * after native start returns but before onEngineStartResult, the UI can clear the tunnel while
-     * tunnel is still running in native so we run as one non-cancellable unit.
-     */
     private suspend fun startEngineAndRegister(
         tunnelId: Int,
         mode: BackendMode,
         tunnelDnsConfig: TunnelDnsConfig?,
     ): EngineStartResult =
         withContext(NonCancellable) {
-            val result = engine.start(tunnelId, mode, tunnelDnsConfig)
-            onEngineStartResult(tunnelId, result)
-            result
+            val handle = allocateTunnelHandle()
+            if (handle < 0) {
+                throw BackendException.InternalError("Failed to allocate tunnel handle")
+            }
+
+            // Map before native start so onStatus can apply immediately.
+            byTunnelId[tunnelId]?.let { oldHandle ->
+                if (oldHandle != handle) {
+                    byHandle.remove(oldHandle)
+                    abandonHandle(oldHandle)
+                }
+            }
+            byHandle[handle] = tunnelId
+            byTunnelId[tunnelId] = handle
+
+            try {
+                val result = engine.start(tunnelId, handle, mode, tunnelDnsConfig)
+                nativeOwnedHandles.add(handle)
+                updateActiveTunnel(tunnelId) {
+                    it.copy(
+                        interfaceName = result.interfaceName,
+                        uptime = System.currentTimeMillis(),
+                    )
+                }
+                result
+            } catch (t: Throwable) {
+                byHandle.remove(handle)
+                byTunnelId.remove(tunnelId, handle)
+                abandonHandle(handle)
+                throw t
+            }
         }
+
+    // Release a handle that never transferred ownership to a running native tunnel.
+    private fun abandonHandle(handle: Int) {
+        if (nativeOwnedHandles.remove(handle)) {
+            return
+        }
+        releaseTunnelHandle(handle)
+    }
 
     private suspend fun bootstrapAndStart(
         tunnel: Tunnel,
@@ -276,10 +300,17 @@ class TunnelBackend(
         mode: BackendMode,
         dns: TunnelDnsConfig?,
     ): Boolean {
-        engine.stop(handle, mode)
+        stopNativeKeepMapped(handle, mode)
         recreateVpnInterfaceIfNeeded(tunnel, mode)
         startEngineAndRegister(tunnel.id, mode, dns)
         return true
+    }
+
+    /** Stop native tunnel and drop ownership; keep Kotlin maps until re-register. */
+    private suspend fun stopNativeKeepMapped(handle: Int, mode: BackendMode) {
+        nativeOwnedHandles.remove(handle)
+        runCatching { engine.stop(handle, mode) }
+            .onFailure { log.w(it) { "stopNativeKeepMapped: engine.stop failed handle=$handle" } }
     }
 
     private suspend fun bounceActiveConfig(
@@ -299,7 +330,7 @@ class TunnelBackend(
                 }
 
         val runtimeMode = mode.withEndpointsFrom(activeConfig)
-        engine.stop(handle, mode)
+        stopNativeKeepMapped(handle, mode)
         recreateVpnInterfaceIfNeeded(tunnel, runtimeMode)
         startEngineAndRegister(tunnel.id, runtimeMode, tunnelDnsConfig)
         return true
@@ -347,7 +378,7 @@ class TunnelBackend(
             )
         }
 
-        engine.stop(handle, mode)
+        stopNativeKeepMapped(handle, mode)
         recreateVpnInterfaceIfNeeded(tunnel, runtimeMode)
         startEngineAndRegister(
             tunnel.id,
@@ -428,11 +459,35 @@ class TunnelBackend(
      */
     private suspend fun tearDownIfRegistered(tunnelId: Int, mode: BackendMode) {
         val handle = byTunnelId[tunnelId] ?: return
-        runCatching { engine.stop(handle, mode) }
-            .onFailure { log.w(it) { "tearDownIfRegistered: engine.stop failed for $tunnelId" } }
+        stopAndReleaseHandle(handle, mode, tunnelId)
+    }
+
+    /**
+     * Stop native if it owns tunnel handle, otherwise release the reservation. Always clears maps.
+     */
+    private suspend fun stopAndReleaseHandle(handle: Int, mode: BackendMode?, tunnelId: Int) {
         byHandle.remove(handle)
-        byTunnelId.remove(tunnelId)
-        pendingStatusByHandle.remove(handle)
+        byTunnelId.remove(tunnelId, handle)
+        val nativeOwned = nativeOwnedHandles.remove(handle)
+        when {
+            nativeOwned && mode != null -> {
+                runCatching { engine.stop(handle, mode) }
+                    .onFailure {
+                        log.w(it) {
+                            "stopAndReleaseHandle: engine.stop failed for tunnel $tunnelId"
+                        }
+                        // Native may not have released, free the reservation defensively.
+                        releaseTunnelHandle(handle)
+                    }
+            }
+            nativeOwned && mode == null -> {
+                log.w {
+                    "stopAndReleaseHandle: native-owned handle=$handle tunnel=$tunnelId with no mode"
+                }
+                releaseTunnelHandle(handle)
+            }
+            else -> releaseTunnelHandle(handle)
+        }
     }
 
     private suspend fun setupServicesAndProtectorForMode(
@@ -459,27 +514,6 @@ class TunnelBackend(
         }
     }
 
-    private fun onEngineStartResult(tunnelId: Int, result: EngineStartResult) {
-        // old handle should be removed if exists
-        byTunnelId[tunnelId]?.let { oldHandle ->
-            if (oldHandle != result.handle) {
-                byHandle.remove(oldHandle)
-                pendingStatusByHandle.remove(oldHandle)
-            }
-        }
-        updateActiveTunnel(tunnelId) {
-            it.copy(interfaceName = result.interfaceName, uptime = System.currentTimeMillis())
-        }
-        byHandle[result.handle] = tunnelId
-        byTunnelId[tunnelId] = result.handle
-
-        // Apply any status that arrived before the handle was mapped (common when handshake
-        // completes during native start, before we return to Kotlin).
-        pendingStatusByHandle.remove(result.handle)?.let { pending ->
-            applyTransportState(tunnelId, pending)
-        }
-    }
-
     private suspend fun cleanup(tunnelId: Int) {
         // Cancel only as cleanup may run from that job
         pendingResolutionJobs.remove(tunnelId)?.cancel()
@@ -491,19 +525,12 @@ class TunnelBackend(
 
         val proxyTypeCount = activeTunnels.values.count { it.mode is BackendMode.Proxy.Standard }
 
-        // Always stop native if we still have a handle
         val handle = byTunnelId[tunnelId]
-        if (handle != null && mode != null) {
-            runCatching { engine.stop(handle, mode) }
-                .onFailure { log.w(it) { "cleanup: engine.stop failed for tunnel $tunnelId" } }
+        if (handle != null) {
+            stopAndReleaseHandle(handle, mode, tunnelId)
         }
 
         removeActiveTunnel(tunnelId)
-        if (handle != null) {
-            byHandle.remove(handle)
-            pendingStatusByHandle.remove(handle)
-        }
-        byTunnelId.remove(tunnelId)
 
         // VPN mode owns the TUN / VpnService session. Kill switch is independent
         // and must not be started or stopped here (including KillSwitchPrimary).
@@ -559,25 +586,20 @@ class TunnelBackend(
         val scriptsEnabled = activeTunnel.tunnel?.scriptsEnabled == true
 
         try {
-            if (handle != null && mode != null) {
-                if (scriptsEnabled) {
-                    mode.config.`interface`.preDown?.let { runScripts(it, tunnelId) }
-                }
-                engine.stop(handle, mode)
-                if (scriptsEnabled) {
-                    mode.config.`interface`.postDown?.let { runScripts(it, tunnelId) }
-                }
-            } else if (handle != null) {
-                log.w {
-                    "stopTunnel: handle $handle for tunnel $tunnelId has no mode; cannot engine.stop"
-                }
-            } else {
+            if (handle != null && mode != null && scriptsEnabled) {
+                mode.config.`interface`.preDown?.let { runScripts(it, tunnelId) }
+            }
+            // cleanup() stops native / releases the handle reservation once.
+            if (handle == null) {
                 log.d {
                     "stopTunnel: no native handle for tunnel $tunnelId (start had not registered)"
                 }
             }
         } finally {
             cleanup(tunnelId)
+            if (handle != null && mode != null && scriptsEnabled) {
+                mode.config.`interface`.postDown?.let { runScripts(it, tunnelId) }
+            }
         }
     }
 
@@ -822,4 +844,13 @@ class TunnelBackend(
     }
 
     external fun setStatusCallback(tunnelStatusCallback: TunnelStatusCallback?)
+
+    // Tells native that Kotlin applied status for the tunnel handle
+    external fun ackStatus(handle: Int, code: Int)
+
+    // Reserve a free native tunnel handle before start so status can be mapped first.
+    external fun allocateTunnelHandle(): Int
+
+    // Free a reserved handle that never became a running native tunnel.
+    external fun releaseTunnelHandle(handle: Int)
 }

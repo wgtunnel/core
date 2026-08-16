@@ -15,10 +15,11 @@ import (
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
 	binder "github.com/wgtunnel/backend/bind"
 	"github.com/wgtunnel/backend/constants"
-	"github.com/wgtunnel/backend/handle"
+	handlepkg "github.com/wgtunnel/backend/handle"
 	"github.com/wgtunnel/backend/ipc"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/roaming"
+	"github.com/wgtunnel/backend/statusnotify"
 	"github.com/wgtunnel/backend/tunwrap"
 )
 
@@ -27,7 +28,6 @@ const tag = "ProxyBackend"
 var (
 	cancelFuncs          map[int32]context.CancelFunc
 	virtualTunnelHandles map[int32]*wireproxyawg.VirtualTun
-	lastTunnelStatus     sync.Map
 	tunnelMu             sync.RWMutex
 )
 
@@ -37,23 +37,24 @@ func init() {
 }
 
 //export startProxy
-func startProxy(ifName string, config string, uapiPath string, bypass int32, dnsConfig string) int32 {
+// startProxy uses an already allocated handle so Kotlin can map status before start.
+// On failure the handle stays reserved — the caller must release it.
+// On success ownership transfers to the tunnel map and turnProxyTunnelOff releases it.
+func startProxy(handle int32, ifName string, config string, uapiPath string, bypass int32, dnsConfig string) int32 {
+	if handle < 0 || !handlepkg.IsReserved(handle) {
+		log.Error(tag, "startProxy: invalid/unreserved handle %d", handle)
+		return -1
+	}
+
 	conf, err := wireproxyawg.ParseConfigString(config)
 	if err != nil {
 		log.Error(tag, "Invalid config file", err)
 		return -1
 	}
 
-	tunHandle, err := handle.GenerateUniqueHandle()
-	if err != nil {
-		log.Error(tag, "Error generating handle: %v", err)
-		return -1
-	}
-
 	setting, err := wireproxyawg.CreateIPCRequest(conf.Device, false)
 	if err != nil {
 		log.Error(tag, "Create IPC request failed")
-		handle.ReleaseHandle(tunHandle)
 		return -1
 	}
 
@@ -64,21 +65,20 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 	)
 	if err != nil {
 		log.Error(tag, "Create TUN failed")
-		handle.ReleaseHandle(tunHandle)
 		return -1
 	}
 
 	deviceTUN, err := tunwrap.MaybeWrapTUNDial(tun, dnsConfig, tnet.DialContext)
 	if err != nil {
 		log.Error(tag, "DNS wrap: %v", err)
+		_ = tun.Close()
 		return -1
 	}
 
 	tunName, err := tun.Name()
 	if err != nil {
 		log.Error(tag, "Failed to get TUN name: %v", err)
-		handle.ReleaseHandle(tunHandle)
-		tun.Close()
+		_ = deviceTUN.Close()
 		return -1
 	}
 
@@ -90,14 +90,8 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 	}
 
 	statusCB := func(code device.StatusCode) {
-		key := tunHandle
-		if prev, loaded := lastTunnelStatus.LoadOrStore(key, code); loaded {
-			if prev == code {
-				return // duplicate, skip
-			}
-			lastTunnelStatus.Store(key, code)
-		}
-		go C.notifyStatus(C.int32_t(tunHandle), C.int32_t(code))
+		// Report to Kotlin with at-least-once delivery until Kotlin acks.
+		statusnotify.Report(handle, int32(code))
 	}
 
 	tunDevice := device.NewDevice(
@@ -111,7 +105,6 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 
 	if err = tunDevice.IpcSet(setting.IpcRequest); err != nil {
 		log.Error(tag, "Ipc setting failed")
-		handle.ReleaseHandle(tunHandle)
 		tunDevice.Close()
 		return -1
 	}
@@ -138,7 +131,6 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 		if uapi != nil {
 			uapi.Close()
 		}
-		handle.ReleaseHandle(tunHandle)
 		tunDevice.Close()
 		return -1
 	}
@@ -156,8 +148,8 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
 
 	tunnelMu.Lock()
-	virtualTunnelHandles[tunHandle] = virtualTun
-	cancelFuncs[tunHandle] = tunnelCancel
+	virtualTunnelHandles[handle] = virtualTun
+	cancelFuncs[handle] = tunnelCancel
 	tunnelMu.Unlock()
 
 	for _, spawner := range conf.Routines {
@@ -168,9 +160,9 @@ func startProxy(ifName string, config string, uapiPath string, bypass int32, dns
 		}(spawner)
 	}
 
-	log.Debug(tag, "Started proxy tunnel for handle %d", tunHandle)
+	log.Debug(tag, "Started proxy tunnel for handle %d", handle)
 
-	return tunHandle
+	return 0
 }
 
 //export updateProxyTunnelPeers
@@ -264,13 +256,10 @@ func turnProxyTunnelOff(virtualTunnelHandle int32) {
 		virtualTun.Dev.Close()
 	}
 
-	lastTunnelStatus.Delete(virtualTunnelHandle)
-	handle.ReleaseHandle(virtualTunnelHandle)
+	statusnotify.Clear(virtualTunnelHandle)
+	handlepkg.ReleaseHandle(virtualTunnelHandle)
 
-	C.notifyStatus(
-		C.int32_t(virtualTunnelHandle),
-		C.int32_t(constants.StatusStop),
-	)
+	statusnotify.NotifyOnce(virtualTunnelHandle, int32(constants.StatusStop))
 
 	log.Debug(
 		tag,
