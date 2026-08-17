@@ -156,7 +156,7 @@ internal class TunnelRecovery(
                     if (snapshots.value.bootstrapPending) continue
 
                     if (recovery.dynamicDnsRecovery) {
-                        tryDynamicDnsRecovery()
+                        tryDynamicDnsRecovery(snapshots.value)
                         delay(stabilizeWindow)
                         noteDeviceAwake(snapshots.value)
                         if (!snapshots.value.shouldRecoveryBeActive) break
@@ -213,7 +213,7 @@ internal class TunnelRecovery(
         }
     }
 
-    private suspend fun tryDynamicDnsRecovery() {
+    private suspend fun tryDynamicDnsRecovery(snap: Snapshot) {
         log.i { "DDNS  Recovery: attempting dynamic DNS recovery for tunnel $tunnelId" }
         val freshBootstrapResolution =
             host.resolveFresh()
@@ -223,42 +223,93 @@ internal class TunnelRecovery(
                 }
 
         val activeConfig = host.getActiveConfig() ?: return
+
+        // Preserve last good IPv4 address across an IPv6 only response window when the
+        // network cannot use IPv6
+        val previous =
+            snap.lastResolvedPeers?.let { BootstrapResolution(it, resolvedTunnelDnsConfig = null) }
+        val merged = freshBootstrapResolution.mergeWith(previous, snap.networkHasIpv6)
+
+        // If peers are already on IPv6 but this network has no IPv6, ForceIpv4
+        val familyOverride =
+            if (!snap.networkHasIpv6 && activeConfig.hasIpv6Peers()) {
+                FamilyOverride.ForceIpv4
+            } else {
+                FamilyOverride.MatchCurrent
+            }
+
         val mismatches =
             activeConfig.findEndpointMismatches(
-                freshBootstrapResolution.peerKeyResults,
-                FamilyOverride.MatchCurrent,
+                merged.peerKeyResults,
+                familyOverride,
+                networkHasIpv6 = snap.networkHasIpv6,
             )
 
+        // Always refresh the cache as merged so a later ForceIpv4 path still sees IPv4 records
+        host.updateActiveTunnel { it.copy(lastBootstrapResolution = merged) }
+
         if (mismatches.isEmpty()) {
-            log.w { "DDNS Recovery: no endpoint IP change detected" }
+            log.w {
+                "DDNS Recovery: no endpoint IP change detected " +
+                    "(family=$familyOverride networkHasIpv6=${snap.networkHasIpv6})"
+            }
             return
         }
 
         val resolved = mode.config.buildResolvedPeers(mismatches)
 
-        log.i { "DDNS Recovery: Found new IPs for peers, updating tunnel with new endpoints..." }
+        log.i {
+            "DDNS Recovery: Found new IPs for peers (family=$familyOverride), " +
+                "updating tunnel with new endpoints..."
+        }
 
         host.updatePeers(resolved)
-
-        // Update the cache
-        host.updateActiveTunnel { it.copy(lastBootstrapResolution = freshBootstrapResolution) }
         host.emit(TunnelEvent.DynamicDnsUpdate(tunnelId, mismatches.keys.toList()))
     }
 
     @OptIn(ExperimentalAtomicApi::class)
     private suspend fun tryLightIpv4Fallback(snap: Snapshot) {
         val activeConfig = host.getActiveConfig() ?: return
-        val hasIpv6Peers = activeConfig.hasIpv6Peers()
+        if (!activeConfig.hasIpv6Peers()) return
 
-        if (!hasIpv6Peers || snap.lastResolvedPeers.isNullOrEmpty()) return
+        var dns = snap.lastResolvedPeers
+        var mismatches =
+            if (!dns.isNullOrEmpty()) {
+                activeConfig.findEndpointMismatches(
+                    dns,
+                    FamilyOverride.ForceIpv4,
+                    networkHasIpv6 = snap.networkHasIpv6,
+                )
+            } else {
+                emptyMap()
+            }
 
-        val mismatches =
-            activeConfig.findEndpointMismatches(snap.lastResolvedPeers, FamilyOverride.ForceIpv4)
+        // Cache my have only IPv6 address. Fresh resolve
+        if (mismatches.isEmpty()) {
+            val fresh =
+                host.resolveFresh()
+                    ?: run {
+                        log.d { "Ipv4 Fallback: no fresh DNS for tunnel $tunnelId" }
+                        return
+                    }
+            val previous = dns?.let { BootstrapResolution(it, resolvedTunnelDnsConfig = null) }
+            val merged = fresh.mergeWith(previous, snap.networkHasIpv6)
+            host.updateActiveTunnel { it.copy(lastBootstrapResolution = merged) }
+            dns = merged.peerKeyResults
+            mismatches =
+                activeConfig.findEndpointMismatches(
+                    dns,
+                    FamilyOverride.ForceIpv4,
+                    networkHasIpv6 = snap.networkHasIpv6,
+                )
+        }
 
-        if (mismatches.isEmpty()) return
+        if (mismatches.isEmpty()) {
+            log.d { "Ipv4 Fallback: no IPv4 endpoints available for tunnel $tunnelId" }
+            return
+        }
 
-        // Only pin the network after a real v6→v4 switch so IPv6 recovery can
-        // still run when we were already on IPv4 (or fallback was a no-op).
+        // Only pin the network after a real switch so recovery can run
         lastIpv4FallbackNetworkKey.store(snap.activeNetworkKey)
         log.i { "Ipv4 Fallback: performing IPv4 fallback peer update for tunnel $tunnelId" }
         val resolved = mode.config.buildResolvedPeers(mismatches)
@@ -374,7 +425,11 @@ internal class TunnelRecovery(
         var dns = snap.lastResolvedPeers
         var mismatches =
             if (!dns.isNullOrEmpty()) {
-                activeConfig.findEndpointMismatches(dns, FamilyOverride.ForceIpv6)
+                activeConfig.findEndpointMismatches(
+                    dns,
+                    FamilyOverride.ForceIpv6,
+                    networkHasIpv6 = true,
+                )
             } else {
                 emptyMap()
             }
@@ -389,9 +444,16 @@ internal class TunnelRecovery(
                         log.d { "IPv6 recovery: no IPv6 endpoints available for tunnel $tunnelId" }
                         return
                     }
-            host.updateActiveTunnel { it.copy(lastBootstrapResolution = fresh) }
-            dns = fresh.peerKeyResults
-            mismatches = activeConfig.findEndpointMismatches(dns, FamilyOverride.ForceIpv6)
+            val previous = dns?.let { BootstrapResolution(it, resolvedTunnelDnsConfig = null) }
+            val merged = fresh.mergeWith(previous, networkHasIpv6 = true)
+            host.updateActiveTunnel { it.copy(lastBootstrapResolution = merged) }
+            dns = merged.peerKeyResults
+            mismatches =
+                activeConfig.findEndpointMismatches(
+                    dns,
+                    FamilyOverride.ForceIpv6,
+                    networkHasIpv6 = true,
+                )
         }
 
         if (mismatches.isEmpty()) {

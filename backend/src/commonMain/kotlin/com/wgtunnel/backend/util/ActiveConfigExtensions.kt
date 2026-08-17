@@ -8,6 +8,7 @@ import com.wgtunnel.parser.ActiveConfig
 internal fun ActiveConfig.findEndpointMismatches(
     freshDns: Map<PublicKey, DnsBootstrapResult>,
     familyOverride: FamilyOverride = FamilyOverride.MatchCurrent,
+    networkHasIpv6: Boolean = true,
 ): Map<PublicKey, ResolvedHost> {
     val currentByKey = peers.associateBy { it.publicKey }
     return freshDns
@@ -28,7 +29,8 @@ internal fun ActiveConfig.findEndpointMismatches(
 
             // Normal path
             val freshHost =
-                dns.selectHostForPeer(current.endpoint, familyOverride) ?: return@mapNotNull null
+                dns.selectHostForPeer(current.endpoint, familyOverride, networkHasIpv6)
+                    ?: return@mapNotNull null
             if (freshHost != currentHost) {
                 pubKey to ResolvedHost(host = freshHost)
             } else {

@@ -11,6 +11,7 @@ data class BootstrapResolution(
     fun toHostMap(
         currentEndpoints: Map<PublicKey, String?> = emptyMap(),
         familyOverride: FamilyOverride = FamilyOverride.MatchCurrent,
+        networkHasIpv6: Boolean = true,
     ): Map<PublicKey, ResolvedHost> =
         peerKeyResults
             .mapNotNull { (pubKey, result) ->
@@ -22,9 +23,31 @@ data class BootstrapResolution(
                 }
 
                 val host =
-                    result.selectHostForPeer(currentEndpoints[pubKey], familyOverride)
-                        ?: return@mapNotNull null
+                    result.selectHostForPeer(
+                        currentEndpoints[pubKey],
+                        familyOverride,
+                        networkHasIpv6,
+                    ) ?: return@mapNotNull null
                 pubKey to ResolvedHost(host = host)
             }
             .toMap()
+
+    /** Merge peer DNS results with a previous resolution. */
+    fun mergeWith(previous: BootstrapResolution?, networkHasIpv6: Boolean): BootstrapResolution {
+        if (previous == null) return this
+        val keys = peerKeyResults.keys + previous.peerKeyResults.keys
+        val mergedPeers = keys.associateWith { key ->
+            val fresh = peerKeyResults[key]
+            val prev = previous.peerKeyResults[key]
+            when {
+                fresh != null -> fresh.mergeWith(prev, networkHasIpv6)
+                prev != null -> prev
+                else -> DnsBootstrapResult()
+            }
+        }
+        return BootstrapResolution(
+            peerKeyResults = mergedPeers,
+            resolvedTunnelDnsConfig = resolvedTunnelDnsConfig ?: previous.resolvedTunnelDnsConfig,
+        )
+    }
 }

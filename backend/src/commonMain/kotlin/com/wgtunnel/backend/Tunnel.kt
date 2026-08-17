@@ -66,8 +66,8 @@ interface Tunnel {
          *   peers
          * @param ipv6Recovery based on IPStrategy settings. Attempts to recovery to IPv6 endpoints
          *   once per network when tunnel is healthy
-         * @param ipv4Fallback only runs with IPStrategy is PreferIpv6, runs once per network when
-         *   there are tunnel failures to fall back to IPv4 endpoints
+         * @param ipv4Fallback runs once per network when the tunnel is unhealthy and peers are on
+         *   IPv6, forcing a switch to IPv4 endpoints.
          */
         data class Recovery(
             val seamlessRecovery: Boolean,

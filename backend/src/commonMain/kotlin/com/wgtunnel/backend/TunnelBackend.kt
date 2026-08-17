@@ -26,6 +26,7 @@ import com.wgtunnel.backend.state.KillSwitchState
 import com.wgtunnel.backend.system.NetworkMonitor
 import com.wgtunnel.backend.system.PowerManager
 import com.wgtunnel.backend.util.hasDynamicEndpoints
+import com.wgtunnel.backend.util.hasIpv6Peers
 import com.wgtunnel.backend.util.rebuildModeWithHostMap
 import com.wgtunnel.backend.util.withEndpointsFrom
 import com.wgtunnel.parser.ActiveConfig
@@ -111,7 +112,7 @@ class TunnelBackend(
     override fun onStatus(handle: Int, code: Int) {
         val state = Tunnel.State.fromNative(code)
         if (state == null) {
-            log.w { "onStatus: unknown code=$code handle=$handle — acking" }
+            log.w { "onStatus: unknown code=$code handle=$handle, acking" }
             ackStatus(handle, code)
             return
         }
@@ -124,8 +125,7 @@ class TunnelBackend(
             return
         }
 
-        // Unmapped handle: nothing to apply. Ack so native stops re-notifying.
-        log.w { "onStatus: unmapped handle=$handle code=$code state=$state — acking" }
+        log.w { "onStatus: unmapped handle=$handle code=$code state=$state, acking" }
         ackStatus(handle, code)
     }
 
@@ -259,6 +259,7 @@ class TunnelBackend(
             bootstrapResolution.toHostMap(
                 currentEndpoints = emptyMap(),
                 familyOverride = familyOverride,
+                networkHasIpv6 = networkHasIpv6,
             )
         val runtimeMode = mode.rebuildModeWithHostMap(hostMap)
         mode.config.peers.forEach { peer ->
@@ -363,18 +364,32 @@ class TunnelBackend(
                 }
 
         val currentEndpoints = currentActiveConfig.peers.associate { it.publicKey to it.endpoint }
+        val networkHasIpv6 = networkMonitor.networkState.value?.hasIpv6 ?: false
+        val previousResolution = _status.value.activeTunnels[tunnel.id]?.lastBootstrapResolution
+        val mergedResolution = bootstrapResult.mergeWith(previousResolution, networkHasIpv6)
+
+        // Force v4 when the network has no IPv6
+        val familyOverride =
+            if (!networkHasIpv6 && currentActiveConfig.hasIpv6Peers()) {
+                FamilyOverride.ForceIpv4
+            } else if (tunnel.ipStrategy is Tunnel.IpStrategy.Ipv4Only) {
+                FamilyOverride.ForceIpv4
+            } else {
+                FamilyOverride.MatchCurrent
+            }
 
         val hostMap =
-            bootstrapResult.toHostMap(
+            mergedResolution.toHostMap(
                 currentEndpoints = currentEndpoints,
-                familyOverride = FamilyOverride.MatchCurrent,
+                familyOverride = familyOverride,
+                networkHasIpv6 = networkHasIpv6,
             )
         val runtimeMode = mode.rebuildModeWithHostMap(hostMap)
 
         updateActiveTunnel(tunnel.id) {
             it.copy(
                 bootstrapState = BootstrapState.Complete,
-                lastBootstrapResolution = bootstrapResult,
+                lastBootstrapResolution = mergedResolution,
             )
         }
 
@@ -383,7 +398,7 @@ class TunnelBackend(
         startEngineAndRegister(
             tunnel.id,
             runtimeMode,
-            bootstrapResult.resolvedTunnelDnsConfig,
+            mergedResolution.resolvedTunnelDnsConfig,
         )
         return true
     }
@@ -736,10 +751,7 @@ class TunnelBackend(
                                                     (tunnel.ipStrategy
                                                             as? Tunnel.IpStrategy.PreferIpv6)
                                                         ?.recoveryEnabled ?: false,
-                                            ipv4Fallback =
-                                                hasDynamicEndpoints &&
-                                                    tunnel.ipStrategy is
-                                                        Tunnel.IpStrategy.PreferIpv6,
+                                            ipv4Fallback = hasDynamicEndpoints,
                                         ),
                                     failureThreshold =
                                         TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
