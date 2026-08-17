@@ -37,11 +37,14 @@ func (t *Transport) init() {
 	if t.client != nil {
 		return
 	}
+	// Custom TLSClientConfig disables Go's automatic HTTP/2. ForceAttemptHTTP2
+	// enables ALPN h2 when the server supports it, fixing servers that are HTTP2 only
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			ServerName: t.ServerName,
 			MinVersion: tls.VersionTLS12,
 		},
+		ForceAttemptHTTP2: true,
 	}
 	if t.DialContext != nil {
 		tr.DialContext = t.DialContext
