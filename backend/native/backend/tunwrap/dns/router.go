@@ -7,7 +7,10 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/wgtunnel/backend/log"
 )
+
+const routerTag = "DnsRouter"
 
 // Router selects which Transport handles a query
 type Router interface {
@@ -49,6 +52,7 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 		if !ok {
 			return nil, fmt.Errorf("dns: transport %q not found", rule.Transport)
 		}
+		log.Debug(routerTag, "route name=%s to transport=%s (suffix rule)", name, rule.Transport)
 		resp, err := t.Exchange(ctx, msg)
 		if err != nil {
 			return nil, err
@@ -60,6 +64,7 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 	if !ok {
 		return nil, fmt.Errorf("dns: final transport %q not found", r.final)
 	}
+	log.Debug(routerTag, "route name=%s to transport=%s (default)", name, r.final)
 	resp, err := t.Exchange(ctx, msg)
 	if err != nil {
 		return nil, err
@@ -100,15 +105,28 @@ func matchRule(rule Rule, name string, qtype uint16) bool {
 	return false
 }
 
-// matchDomain reports whether normalized name matches pattern
+// NameMatchesSuffixes reports whether name matches any configured split suffix.
+// name may be raw or already normalized.
+func NameMatchesSuffixes(name string, suffixes []string) bool {
+	if len(suffixes) == 0 || strings.TrimSpace(name) == "" {
+		return false
+	}
+	n := normalizeDNSName(name)
+	for _, s := range suffixes {
+		if matchDomain(n, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchDomain reports whether normalized name matches pattern.
 func matchDomain(name, pattern string) bool {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	if pattern == "" {
 		return false
 	}
 
-	// For suffix style
-	suffixOnly := strings.HasPrefix(pattern, ".")
 	pattern = strings.TrimPrefix(pattern, ".")
 	if !strings.HasSuffix(pattern, ".") {
 		pattern += "."
@@ -117,14 +135,8 @@ func matchDomain(name, pattern string) bool {
 	if name == pattern {
 		return true
 	}
-	// Subdomain
-	if strings.HasSuffix(name, "."+pattern) {
-		return true
-	}
-	if suffixOnly {
-		return false
-	}
-	return false
+	// Subdomain / suffix: home.local. matches local.
+	return strings.HasSuffix(name, "."+pattern)
 }
 
 var _ Router = (*SimpleRouter)(nil)

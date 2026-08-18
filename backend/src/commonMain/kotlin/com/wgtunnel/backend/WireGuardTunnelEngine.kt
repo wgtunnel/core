@@ -49,9 +49,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                         null
                     }
                 }
-        val dnsJson = runtimeDnsConfig?.let {
-            json.encodeToString(TunnelDnsConfig.serializer(), it)
-        }
+        val dnsJson = runtimeDnsConfig?.let { json.encodeToString(it) }
 
         when (mode) {
             is BackendMode.Proxy.KillSwitchPrimary -> {

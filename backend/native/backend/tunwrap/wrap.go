@@ -56,7 +56,15 @@ func MaybeWrapTUNDial(base tun.Device, dnsConfigJSON string, dial DialContextFun
 		passthrough = wrap.UpstreamIPs(cfg.Upstream)
 	}
 
-	ft, err := wrap.NewWrapperTUN(base, engine, cfg.FakeDNS, cfg.FakeDNSV6, cfg.ForeignDNSPolicy, passthrough)
+	ft, err := wrap.NewWrapperTUN(
+		base,
+		engine,
+		cfg.FakeDNS,
+		cfg.FakeDNSV6,
+		cfg.ForeignDNSPolicy,
+		cfg.LocalSuffixes,
+		passthrough,
+	)
 	if err != nil {
 		_ = engine.Close()
 		base.Close()
@@ -66,5 +74,12 @@ func MaybeWrapTUNDial(base tun.Device, dnsConfigJSON string, dial DialContextFun
 }
 
 func needsLocal(cfg *dns.TunnelDNSConfig) bool {
-	return cfg.DefaultTransport == "local" || len(cfg.LocalSuffixes) > 0
+	if cfg == nil {
+		return false
+	}
+	if cfg.DefaultTransport == "local" || len(cfg.LocalSuffixes) > 0 {
+		return true
+	}
+	// Inverse split always needs local
+	return strings.EqualFold(strings.TrimSpace(cfg.SplitMode), "tunnel")
 }

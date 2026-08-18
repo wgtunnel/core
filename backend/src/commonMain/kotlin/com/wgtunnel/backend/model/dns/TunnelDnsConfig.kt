@@ -13,6 +13,8 @@ data class TunnelDnsConfig(
     val fakeDns: String = FAKE_DNS_V4,
     val fakeDnsV6: String = FAKE_DNS_V6,
     val foreignDnsPolicy: ForeignDnsPolicy = ForeignDnsPolicy.REDIRECT,
+    // How local suffixes are routed when not empty
+    val splitMode: DnsSplitMode = DnsSplitMode.SYSTEM,
 ) {
     fun needsResolve(): Boolean {
         if (defaultTransport == "local") return false

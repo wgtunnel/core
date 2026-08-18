@@ -38,6 +38,7 @@ type WrapperTUN struct {
 	fakeDNSv4        netip.Addr
 	fakeDNSv6        netip.Addr
 	foreignDNSPolicy string
+	suffixes         []string
 	passthroughDNS   map[netip.Addr]struct{}
 
 	dnsSem chan struct{}
@@ -56,6 +57,7 @@ func NewWrapperTUN(
 	fakeDNSv4 string,
 	fakeDNSv6 string,
 	foreignDnsPolicy string,
+	suffixes []string,
 	passthrough []netip.Addr,
 ) (*WrapperTUN, error) {
 	if dnsEngine == nil {
@@ -78,12 +80,14 @@ func NewWrapperTUN(
 			pass[a] = struct{}{}
 		}
 	}
+	sfx := append([]string(nil), suffixes...)
 	return &WrapperTUN{
 		realTUN:          real,
 		dns:              dnsEngine,
 		fakeDNSv4:        v4,
 		fakeDNSv6:        v6, // zero Addr if unused — IsValid() == false
 		foreignDNSPolicy: foreignDnsPolicy,
+		suffixes:         sfx,
 		passthroughDNS:   pass,
 		dnsSem:           make(chan struct{}, maxInFlightDNS),
 		cache:            make(map[string]cacheEntry),
@@ -144,15 +148,25 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		return false
 	}
 
-	// TCP/53 is plain DNS-over-TCP, only allow if it is a system-tunnel FakeDNS upstream.
+	policy := normalizeForeignDNSPolicy(f.foreignDNSPolicy)
+
+	// TCP/53 Prefer not blocking suffix-matched names, otherwise
+	// apply foreign policy by destination
 	if p.Protocol == 6 && p.DstPort == 53 {
 		if _, ok := f.passthroughDNS[p.DstIP]; ok {
 			return false
 		}
-		if f.foreignDNSPolicy == "allow" {
+		toFake := isDNSQueryToFake(p, f.fakeDNSv4, f.fakeDNSv6)
+		if !toFake && policy == "allow" {
+			log.Debug(tag, "dns: allow tcp/53 %s to %s, pass", p.SrcIP, p.DstIP)
 			return false
 		}
-		log.Debug(tag, "dns: drop tcp/53 %s to %s", p.SrcIP, p.DstIP)
+		if !toFake {
+			log.Debug(tag, "dns: block tcp/53 %s to %s, drop", p.SrcIP, p.DstIP)
+			return true
+		}
+		// FakeDNS over TCP, drop
+		log.Debug(tag, "dns: drop tcp/53 fake %s to %s", p.SrcIP, p.DstIP)
 		return true
 	}
 
@@ -164,29 +178,39 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		return false
 	}
 
-	toFake := isDNSQueryToFake(p, f.fakeDNSv4, f.fakeDNSv6)
-	switch f.foreignDNSPolicy {
-	case "allow":
-		if !toFake {
-			return false
-		}
-	case "drop":
-		if !toFake {
-			log.Debug(tag, "dns: drop udp/53 %s → %s", p.SrcIP, p.DstIP)
-			return true
-		}
-	default: // "redirect" or empty
-	}
-
 	if len(p.Payload) == 0 {
 		log.Debug(tag, "dns: empty udp payload, drop")
 		return true
 	}
 
+	qname, qok := dnsQuestionName(p.Payload)
+	toFake := isDNSQueryToFake(p, f.fakeDNSv4, f.fakeDNSv6)
+	suffixHit := qok && tunDns.NameMatchesSuffixes(qname, f.suffixes)
+
+	// Split suffixes win over foreign policy: always hijack matching names,
+	// even when the client targeted 8.8.8.8 / etc.
+	switch {
+	case suffixHit:
+		log.Debug(tag, "dns: suffix-match name=%s dest=%s → hijack", qname, p.DstIP)
+	case toFake:
+		log.Debug(tag, "dns: fake name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
+	default:
+		switch policy {
+		case "allow":
+			log.Debug(tag, "dns: allow name=%s dest=%s → pass", emptyName(qname, qok), p.DstIP)
+			return false
+		case "drop":
+			log.Debug(tag, "dns: block name=%s dest=%s → drop", emptyName(qname, qok), p.DstIP)
+			return true
+		default: // redirect
+			log.Debug(tag, "dns: redirect name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
+		}
+	}
+
 	select {
 	case f.dnsSem <- struct{}{}:
 	default:
-		log.Debug(tag, "dns: drop under load")
+		log.Debug(tag, "dns: drop under load name=%s dest=%s", emptyName(qname, qok), p.DstIP)
 		return true
 	}
 
@@ -205,6 +229,21 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		f.resolveAndReply(&orig)
 	}()
 	return true
+}
+
+func dnsQuestionName(payload []byte) (string, bool) {
+	msg := new(dns.Msg)
+	if err := msg.Unpack(payload); err != nil || len(msg.Question) == 0 {
+		return "", false
+	}
+	return msg.Question[0].Name, true
+}
+
+func emptyName(name string, ok bool) string {
+	if !ok || name == "" {
+		return "?"
+	}
+	return name
 }
 
 func cacheKey(q dns.Question) string {
@@ -308,6 +347,7 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 	// Check cache first for fast path
 	if cached := f.cacheGet(q); cached != nil {
 		cached.Id = msg.Id
+		log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d (cache)", q.Name, cached.Rcode, len(cached.Answer))
 		f.writeDNSResponse(orig, cached, q.Name)
 		return
 	}
@@ -328,10 +368,10 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 
 			ttl := negativeCacheTTL
 			if local.IsNoHandleError(err) {
-				log.Debug(tag, "local: no handle, returning SERVFAIL for %s", q.Name)
+				log.Debug(tag, "dns: reply name=%s rcode=SERVFAIL (local no handle)", q.Name)
 				ttl = 30 * time.Second // give more breathing room when handle is missing
 			} else {
-				log.Error(tag, "dns: exchange %s: %v", q.Name, err)
+				log.Error(tag, "dns: exchange name=%s err=%v → SERVFAIL", q.Name, err)
 			}
 
 			f.cachePut(q, fail, ttl)
@@ -356,6 +396,7 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 
 	resp := v.(*dns.Msg).Copy()
 	resp.Id = msg.Id
+	log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d", q.Name, resp.Rcode, len(resp.Answer))
 	f.writeDNSResponse(orig, resp, q.Name)
 }
 
@@ -417,6 +458,18 @@ func (f *WrapperTUN) writeDNSResponse(orig *parsedPacket, resp *dns.Msg, name st
 	}
 	// Disable logging for domain names for now
 	//log.Debug(tag, "dns: replied %s (%d bytes)", name, len(outPacket))
+}
+
+// normalizeForeignDNSPolicy maps Kotlin/native wire values to allow|drop|redirect.
+func normalizeForeignDNSPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "allow":
+		return "allow"
+	case "drop", "block":
+		return "drop"
+	default:
+		return "redirect"
+	}
 }
 
 var _ awgtun.Device = (*WrapperTUN)(nil)

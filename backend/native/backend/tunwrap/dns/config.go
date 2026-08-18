@@ -10,6 +10,10 @@ import (
 // If JSON is empty, feature is off
 // Upstreams are expected to be pre-resolved
 // If localSuffixes is not empty registers local transport and split rules
+//
+// SplitMode controls suffix routing when LocalSuffixes is non-empty:
+//   - "system" or empty: suffixes routed to local, everything else to default transport
+//   - "tunnel": suffixes to default transport, everything else to local
 type TunnelDNSConfig struct {
 	FakeDNS          string   `json:"fakeDns"`   // IPv4, required when hijack on
 	FakeDNSV6        string   `json:"fakeDnsV6"` // optional; empty = no v6 fake
@@ -17,7 +21,8 @@ type TunnelDNSConfig struct {
 	LocalSuffixes    []string `json:"localSuffixes"`
 	Upstream         []string `json:"upstream"`
 	ServerName       string   `json:"serverName"`
-	ForeignDNSPolicy string   `json:"foreignDnsPolicy"` // default true from Kotlin encode
+	ForeignDNSPolicy string   `json:"foreignDnsPolicy"` // redirect | drop/block | allow
+	SplitMode        string   `json:"splitMode"`        // system | tunnel
 }
 
 // ParseTunnelDNSConfig parses the TunnelDNSConfig from JSON string
