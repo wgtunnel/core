@@ -24,9 +24,19 @@ data class ActiveTunnel(
         return lastBootstrapResolution?.resolvedTunnelDnsConfig ?: tunnelDnsConfig
     }
 
-    /** Whether a tunnel recovery episode should stay active. */
-    fun shouldRecoveryBeActive(hasUsableNetwork: Boolean): Boolean {
+    fun isTransportHealthy(): Boolean = transportState is Tunnel.State.Up.Healthy
+
+    fun isHandshakeFailure(): Boolean = transportState is Tunnel.State.Up.HandshakeFailure
+
+    // Start a failure recovery episode only after a real handshake failure.
+    fun shouldArmFailureRecovery(hasUsableNetwork: Boolean): Boolean {
         if (!hasUsableNetwork) return false
-        return transportState !is Tunnel.State.Up.Healthy
+        return isHandshakeFailure()
+    }
+
+    // Keep a failure-recovery episode alive until the tunnel is healthy again.
+    fun shouldKeepFailureRecoveryEpisode(hasUsableNetwork: Boolean): Boolean {
+        if (!hasUsableNetwork) return false
+        return !isTransportHealthy()
     }
 }

@@ -3,9 +3,7 @@ package com.wgtunnel.backend.model.dns
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * How tunnel DNS hijacking treats packets not destined for FakeDNS (foreign, plaintext DNS).
- */
+/** How tunnel DNS hijacking treats packets not destined for FakeDNS (foreign, plaintext DNS). */
 @Serializable
 enum class ForeignDnsPolicy {
     @SerialName("redirect") REDIRECT,

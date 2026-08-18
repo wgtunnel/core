@@ -63,7 +63,11 @@ internal class TunnelRecovery(
     }
 
     data class Snapshot(
-        val shouldRecoveryBeActive: Boolean,
+        val shouldArmFailureRecovery: Boolean,
+        // True while not Healthy and network usable. Keeps an armed episode alive across bounce
+        // Down/Starting.
+        val shouldKeepFailureRecoveryEpisode: Boolean,
+        val transportHealthy: Boolean,
         val bootstrapPending: Boolean,
         val lastResolvedPeers: Map<PublicKey, DnsBootstrapResult>?,
         val networkHasIpv6: Boolean,
@@ -99,7 +103,9 @@ internal class TunnelRecovery(
                         started = SharingStarted.Eagerly,
                         initialValue =
                             Snapshot(
-                                shouldRecoveryBeActive = false,
+                                shouldArmFailureRecovery = false,
+                                shouldKeepFailureRecoveryEpisode = false,
+                                transportHealthy = false,
                                 bootstrapPending = false,
                                 lastResolvedPeers = null,
                                 networkHasIpv6 = false,
@@ -129,21 +135,24 @@ internal class TunnelRecovery(
             }
 
             while (isActive) {
-                // Wait for first failure state
-                snapshots.first { it.shouldRecoveryBeActive }
+                // Arm only on HandshakeFailure — not Starting/unknown
+                snapshots.first { it.shouldArmFailureRecovery }
                 log.d { "Recovery episode started for tunnel $tunnelId" }
                 noteDeviceAwake(snapshots.value)
 
-                while (isActive && snapshots.value.shouldRecoveryBeActive) {
+                // Stay until Healthy (or network unusable), including bounce Down/Starting
+                while (isActive && snapshots.value.shouldKeepFailureRecoveryEpisode) {
                     noteDeviceAwake(snapshots.value)
 
                     // Bootstrap in flight, wait until it is completed while keeping the session
                     // active
                     if (snapshots.value.bootstrapPending) {
                         log.d { "Recovery: waiting for bootstrap to finish for tunnel $tunnelId" }
-                        snapshots.first { !it.bootstrapPending || !it.shouldRecoveryBeActive }
+                        snapshots.first {
+                            !it.bootstrapPending || !it.shouldKeepFailureRecoveryEpisode
+                        }
                         noteDeviceAwake(snapshots.value)
-                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
                         // Bootstrap finished while still unhealthy, fall through to a fresh
                         // stabilize window before we act
                     }
@@ -152,14 +161,14 @@ internal class TunnelRecovery(
 
                     // recheck state
                     noteDeviceAwake(snapshots.value)
-                    if (!snapshots.value.shouldRecoveryBeActive) break
+                    if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
                     if (snapshots.value.bootstrapPending) continue
 
                     if (recovery.dynamicDnsRecovery) {
                         tryDynamicDnsRecovery(snapshots.value)
                         delay(stabilizeWindow)
                         noteDeviceAwake(snapshots.value)
-                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
                         if (snapshots.value.bootstrapPending) continue
                     }
 
@@ -172,7 +181,7 @@ internal class TunnelRecovery(
                         tryLightIpv4Fallback(snap)
                         delay(stabilizeWindow)
                         noteDeviceAwake(snapshots.value)
-                        if (!snapshots.value.shouldRecoveryBeActive) break
+                        if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
                         if (snapshots.value.bootstrapPending) continue
                     }
 
@@ -187,7 +196,7 @@ internal class TunnelRecovery(
                         delay(failureThreshold)
                         val ready = snapshots.value
                         noteDeviceAwake(ready)
-                        if (!ready.shouldRecoveryBeActive) break
+                        if (!ready.shouldKeepFailureRecoveryEpisode) break
                         // No full bounce while in Doze or when bootstrap is in flight
                         if (!ready.deviceAwake || ready.bootstrapPending) continue
 
@@ -202,7 +211,7 @@ internal class TunnelRecovery(
                     }
                 }
 
-                // Healthy
+                // Healthy (or network unusable)
                 if (seamlessRecoveryAttempted != 0) {
                     log.d {
                         "Recovery episode ended for tunnel $tunnelId (attempts=$seamlessRecoveryAttempted)"
@@ -339,8 +348,8 @@ internal class TunnelRecovery(
     @OptIn(ExperimentalAtomicApi::class)
     private fun isIpv6Recoverable(snap: Snapshot): Boolean {
         val key = snap.activeNetworkKey
-        return snap.networkHasIpv6 &&
-            !snap.shouldRecoveryBeActive &&
+        return snap.transportHealthy &&
+            snap.networkHasIpv6 &&
             !snap.bootstrapPending &&
             key != null &&
             key != lastIpv4FallbackNetworkKey.load() &&
@@ -349,7 +358,7 @@ internal class TunnelRecovery(
 
     @OptIn(ExperimentalAtomicApi::class)
     private fun ipv6SkipReason(snap: Snapshot): String? {
-        if (snap.shouldRecoveryBeActive) return "unhealthy"
+        if (!snap.transportHealthy) return "not healthy"
         if (snap.bootstrapPending) return "bootstrap pending"
         if (!snap.networkHasIpv6) return "network has no ipv6"
         if (snap.activeNetworkKey == null) return "no network key"
@@ -373,7 +382,9 @@ internal class TunnelRecovery(
                         started = SharingStarted.Eagerly,
                         initialValue =
                             Snapshot(
-                                shouldRecoveryBeActive = false,
+                                shouldArmFailureRecovery = false,
+                                shouldKeepFailureRecoveryEpisode = false,
+                                transportHealthy = false,
                                 bootstrapPending = false,
                                 lastResolvedPeers = null,
                                 networkHasIpv6 = false,
@@ -384,7 +395,7 @@ internal class TunnelRecovery(
 
             launch {
                 snapshots.collect { snap ->
-                    if (snap.shouldRecoveryBeActive || !snap.networkHasIpv6) return@collect
+                    if (!snap.transportHealthy || !snap.networkHasIpv6) return@collect
                     ipv6SkipReason(snap)?.let { reason ->
                         log.d { "IPv6 recovery: skip ($reason) for tunnel $tunnelId" }
                     }

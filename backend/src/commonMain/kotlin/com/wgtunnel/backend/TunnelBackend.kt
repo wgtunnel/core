@@ -770,10 +770,17 @@ class TunnelBackend(
                                                         powerManager.deviceAwake,
                                                     ) { active, network, awake ->
                                                         TunnelRecovery.Snapshot(
-                                                            shouldRecoveryBeActive =
-                                                                active.shouldRecoveryBeActive(
+                                                            shouldArmFailureRecovery =
+                                                                active.shouldArmFailureRecovery(
                                                                     network.isUsable
                                                                 ),
+                                                            shouldKeepFailureRecoveryEpisode =
+                                                                active
+                                                                    .shouldKeepFailureRecoveryEpisode(
+                                                                        network.isUsable
+                                                                    ),
+                                                            transportHealthy =
+                                                                active.isTransportHealthy(),
                                                             bootstrapPending =
                                                                 active.bootstrapState is
                                                                     BootstrapState.ResolvingDns ||

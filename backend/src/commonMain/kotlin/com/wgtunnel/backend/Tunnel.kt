@@ -61,11 +61,13 @@ interface Tunnel {
          *
          * @param seamlessRecovery full tunnel bounce after sustained HandshakeFailure, maintaining
          *   the current config and skipping deep device idle / Doze to prevent false positives
-         *   (screen-off is allowed so background traffic can recover)
+         *   (screen-off is allowed so background traffic can recover). Episodes arm only on
+         *   HandshakeFailure (not Starting) and stay active until Healthy so bounce Down/Starting
+         *   does not reset the retry budget.
          * @param dynamicDnsRecovery performs a fresh resolve bypassing the tunnel and updating the
          *   peers
          * @param ipv6Recovery based on IPStrategy settings. Attempts to recovery to IPv6 endpoints
-         *   once per network when tunnel is healthy
+         *   once per network when transport is Healthy
          * @param ipv4Fallback runs once per network when the tunnel is unhealthy and peers are on
          *   IPv6, forcing a switch to IPv4 endpoints.
          */
