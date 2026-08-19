@@ -13,7 +13,7 @@ kotlinx-coroutines = "1.11.0"
 ktfmt = "0.27.0"
 
 # Logging
-logbackClassic = "1.6.2"
+logbackClassic = "1.6.3"
 kermit = "2.1.0"
 
 # Util
