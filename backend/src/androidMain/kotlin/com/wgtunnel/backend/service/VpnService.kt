@@ -304,9 +304,16 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                         allowFamily(OsConstants.AF_INET6)
                     }
 
+                    // Always add routes for fakeDNS to support split tunnels
                     if (fakeDns) {
-                        if (hasIpv4) addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
-                        if (hasIpv6) addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
+                        if (hasIpv4) {
+                            addDnsServer(TunnelDnsConfig.FAKE_DNS_V4)
+                            addRoute(TunnelDnsConfig.FAKE_DNS_V4, 32)
+                        }
+                        if (hasIpv6) {
+                            addDnsServer(TunnelDnsConfig.FAKE_DNS_V6)
+                            addRoute(TunnelDnsConfig.FAKE_DNS_V6, 128)
+                        }
                     }
 
                     // Only add DNS servers whose family is supported
