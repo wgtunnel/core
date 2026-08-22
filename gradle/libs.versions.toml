@@ -5,7 +5,7 @@ android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.2.0"
+lib = "1.2.1"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.11.0"
  # Corutines
