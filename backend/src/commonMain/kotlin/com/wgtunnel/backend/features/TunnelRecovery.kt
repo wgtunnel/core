@@ -438,7 +438,7 @@ internal class TunnelRecovery(
             if (!dns.isNullOrEmpty()) {
                 activeConfig.findEndpointMismatches(
                     dns,
-                    FamilyOverride.ForceIpv6,
+                    FamilyOverride.PreferIpv6,
                     networkHasIpv6 = true,
                 )
             } else {
@@ -462,7 +462,7 @@ internal class TunnelRecovery(
             mismatches =
                 activeConfig.findEndpointMismatches(
                     dns,
-                    FamilyOverride.ForceIpv6,
+                    FamilyOverride.PreferIpv6,
                     networkHasIpv6 = true,
                 )
         }

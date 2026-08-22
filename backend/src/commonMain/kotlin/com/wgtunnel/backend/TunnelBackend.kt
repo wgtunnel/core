@@ -245,9 +245,9 @@ class TunnelBackend(
         val networkHasIpv6 = networkMonitor.networkState.value?.hasIpv6 ?: false
         val familyOverride =
             if (tunnel.ipStrategy is Tunnel.IpStrategy.PreferIpv6 && networkHasIpv6) {
-                FamilyOverride.ForceIpv6
+                FamilyOverride.PreferIpv6
             } else {
-                FamilyOverride.ForceIpv4
+                FamilyOverride.MatchCurrent
             }
         log.i {
             "Endpoint family: strategy=${tunnel.ipStrategy::class.simpleName} " +

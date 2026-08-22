@@ -27,7 +27,7 @@ data class DnsBootstrapResult(
             when (familyOverride) {
                 FamilyOverride.MatchCurrent -> currentlyIpv6
                 FamilyOverride.ForceIpv4 -> false
-                FamilyOverride.ForceIpv6 -> true
+                FamilyOverride.PreferIpv6 -> true
             }
 
         val ipv6Candidates = if (networkHasIpv6) ipv6 else emptyList()
