@@ -24,6 +24,8 @@ jobs:
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Verify tag is x.x.x and matches catalog
         run: |
