@@ -74,8 +74,14 @@ tasks.named<Delete>("clean") {
 }
 
 signing {
-    val inMemoryKey = providers.gradleProperty("signing.inMemoryKey")
-    val password = providers.gradleProperty("signing.password")
+    val inMemoryKey =
+        providers
+            .gradleProperty("signingInMemoryKey")
+            .orElse(providers.gradleProperty("signing.inMemoryKey"))
+    val password =
+        providers
+            .gradleProperty("signingInMemoryKeyPassword")
+            .orElse(providers.gradleProperty("signing.password"))
     if (inMemoryKey.isPresent) {
         useInMemoryPgpKeys(inMemoryKey.get(), password.orNull.orEmpty())
     }

@@ -68,12 +68,17 @@ kotlin {
 }
 
 signing {
-    val inMemoryKey = providers.gradleProperty("signing.inMemoryKey")
-    val password = providers.gradleProperty("signing.password")
-    useInMemoryPgpKeys(
-        inMemoryKey.get(),
-        password.orNull.orEmpty(),
-    )
+    val inMemoryKey =
+        providers
+            .gradleProperty("signingInMemoryKey")
+            .orElse(providers.gradleProperty("signing.inMemoryKey"))
+    val password =
+        providers
+            .gradleProperty("signingInMemoryKeyPassword")
+            .orElse(providers.gradleProperty("signing.password"))
+    if (inMemoryKey.isPresent) {
+        useInMemoryPgpKeys(inMemoryKey.get(), password.orNull.orEmpty())
+    }
 }
 
 mavenPublishing {

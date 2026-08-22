@@ -1,0 +1,73 @@
+name: publish
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+env:
+  JAVA_VERSION: "21"
+  JAVA_DISTRIBUTION: temurin
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USER }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASS }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASS }}
+      GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag is x.x.x and matches catalog
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${TAG}' must be x.x.x"
+            exit 1
+          fi
+          LIB_VERSION="$(sed -nE 's/^lib = \"([0-9]+\.[0-9]+\.[0-9]+)\"/\1/p' gradle/libs.versions.toml)"
+          if [[ -z "${LIB_VERSION}" ]]; then
+            echo "Could not read lib version from gradle/libs.versions.toml"
+            exit 1
+          fi
+          if [[ "${TAG}" != "${LIB_VERSION}" ]]; then
+            echo "Tag '${TAG}' does not match catalog lib = \"${LIB_VERSION}\""
+            exit 1
+          fi
+          echo "Publishing ${LIB_VERSION}"
+
+      - name: Verify Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Install mingw-w64 and build tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            mingw-w64 \
+            make \
+            curl \
+            ca-certificates
+          x86_64-w64-mingw32-gcc --version
+          x86_64-w64-mingw32-g++ --version
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+          check-latest: false
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Publish to Maven Central
+        run: ./gradlew publishToMavenCentral --no-configuration-cache --stacktrace --no-daemon
