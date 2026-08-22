@@ -41,13 +41,14 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
 
     override fun onCreate() {
         super.onCreate()
-        serviceManager.set(this)
         launchForegroundNotification()
+        serviceManager.set(this)
         observeProxyPersistentNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        launchForegroundNotification()
         serviceManager.set(this)
 
         if (intent == null) {
@@ -57,8 +58,6 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
             log.d { "TunnelService started by system (Always-On trigger)" }
             RuntimeManager.alwaysOnCallback?.alwaysOnTriggered()
         }
-
-        launchForegroundNotification()
 
         return START_STICKY
     }

@@ -154,8 +154,8 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
     }
 
     actual suspend fun setKillSwitch(config: KillSwitchConfig?) {
-        val vpnService = getVpnService()
-        vpnService.setKillSwitch(config)
+        getCompanionService()
+        getVpnService().setKillSwitch(config)
     }
 
     actual suspend fun isKillSwitchEnabled(): Boolean {

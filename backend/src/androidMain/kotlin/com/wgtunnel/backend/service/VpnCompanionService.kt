@@ -38,14 +38,17 @@ internal class VpnCompanionService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        serviceManager.set(this)
         log.d { "CompanionService created" }
+        // startForeground before publishing ready so we don't try to start the VpnService
+        // before we are foregrounded
         launchForegroundNotification()
+        serviceManager.set(this)
         observeVpnPersistentNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        launchForegroundNotification()
         serviceManager.set(this)
         val isSystemRestart =
             intent?.component == null || intent.component!!.packageName != packageName
@@ -56,7 +59,6 @@ internal class VpnCompanionService : LifecycleService() {
             // Android actually brings back so we will trigger the restore from here.
             log.i { "VpnCompanionService restarted by system (sticky)" }
             RuntimeManager.alwaysOnCallback?.onStickyRestart()
-            launchForegroundNotification()
         }
         return START_STICKY
     }
