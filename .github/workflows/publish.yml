@@ -1,7 +1,7 @@
 name: publish
 
 permissions:
-  contents: read
+  contents: write
 
 on:
   push:
@@ -73,3 +73,12 @@ jobs:
 
       - name: Publish to Maven Central
         run: ./gradlew publishToMavenCentral --no-configuration-cache --stacktrace --no-daemon
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
