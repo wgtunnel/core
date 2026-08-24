@@ -66,8 +66,9 @@ interface Tunnel {
          *   does not reset the retry budget.
          * @param dynamicDnsRecovery performs a fresh resolve bypassing the tunnel and updating the
          *   peers
-         * @param ipv6Recovery based on IPStrategy settings. Attempts to recovery to IPv6 endpoints
-         *   once per network when transport is Healthy
+         * @param ipv6Recovery based on IPStrategy settings. While Healthy, tries IPv6 endpoints
+         *   once per network (including after an IPv4 fallback on that network). A failed try is
+         *   not repeated until the network changes.
          * @param ipv4Fallback runs once per network when the tunnel is unhealthy and peers are on
          *   IPv6, forcing a switch to IPv4 endpoints.
          * @param bounceDelaySeconds wait after HandshakeFailure before a full bounce.

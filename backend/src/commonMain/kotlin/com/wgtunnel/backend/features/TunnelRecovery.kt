@@ -365,7 +365,6 @@ internal class TunnelRecovery(
             snap.networkHasIpv6 &&
             !snap.bootstrapPending &&
             key != null &&
-            key != lastIpv4FallbackNetworkKey.load() &&
             key != lastIpv6RecoveryNetworkKey.load()
     }
 
@@ -376,9 +375,6 @@ internal class TunnelRecovery(
         if (snap.bootstrapPending) return "bootstrap pending"
         if (!snap.networkHasIpv6) return "network has no ipv6"
         if (snap.activeNetworkKey == null) return "no network key"
-        if (snap.activeNetworkKey == lastIpv4FallbackNetworkKey.load()) {
-            return "blocked: ipv4 fallback already ran on ${snap.activeNetworkKey}"
-        }
         if (snap.activeNetworkKey == lastIpv6RecoveryNetworkKey.load()) {
             return "blocked: already attempted on ${snap.activeNetworkKey}"
         }
@@ -433,18 +429,39 @@ internal class TunnelRecovery(
                     continue
                 }
 
-                tryIpv6Upgrade(snap)
-                lastIpv6RecoveryNetworkKey.store(snap.activeNetworkKey)
+                when (tryIpv6Upgrade(snap)) {
+                    Ipv6UpgradeResult.Skipped -> continue
+                    Ipv6UpgradeResult.AlreadyOnIpv6 -> {
+                        val key = snap.activeNetworkKey
+                        snapshots.first {
+                            it.activeNetworkKey != key ||
+                                !it.transportHealthy ||
+                                !it.recovery.ipv6Recovery ||
+                                it.bootstrapPending
+                        }
+                    }
+                    Ipv6UpgradeResult.Attempted,
+                    Ipv6UpgradeResult.Upgraded ->
+                        lastIpv6RecoveryNetworkKey.store(snap.activeNetworkKey)
+                }
             }
         }
     }
 
-    private suspend fun tryIpv6Upgrade(snap: Snapshot) {
+    private enum class Ipv6UpgradeResult {
+        Skipped,
+        AlreadyOnIpv6,
+        Attempted,
+        Upgraded,
+    }
+
+    @OptIn(ExperimentalAtomicApi::class)
+    private suspend fun tryIpv6Upgrade(snap: Snapshot): Ipv6UpgradeResult {
         val activeConfig =
             host.getActiveConfig()
                 ?: run {
                     log.d { "IPv6 recovery: no active config for tunnel $tunnelId" }
-                    return
+                    return Ipv6UpgradeResult.Skipped
                 }
 
         var dns = snap.lastResolvedPeers
@@ -467,7 +484,11 @@ internal class TunnelRecovery(
                 host.resolveFresh()
                     ?: run {
                         log.d { "IPv6 recovery: no IPv6 endpoints available for tunnel $tunnelId" }
-                        return
+                        return if (activeConfig.hasIpv6Peers()) {
+                            Ipv6UpgradeResult.AlreadyOnIpv6
+                        } else {
+                            Ipv6UpgradeResult.Attempted
+                        }
                     }
             val previous = dns?.let { BootstrapResolution(it, resolvedTunnelDnsConfig = null) }
             val merged = fresh.mergeWith(previous, networkHasIpv6 = true)
@@ -486,13 +507,24 @@ internal class TunnelRecovery(
                 "IPv6 recovery: all upgradable peers already on the chosen IPv6 host " +
                     "(or no AAAA) for tunnel $tunnelId"
             }
-            return
+            return if (activeConfig.hasIpv6Peers()) {
+                Ipv6UpgradeResult.AlreadyOnIpv6
+            } else {
+                Ipv6UpgradeResult.Attempted
+            }
         }
 
-        log.i { "Ipv6 Recovery: tunnel $tunnelId upgrading ${mismatches.size} peer(s) to IPv6" }
+        val afterFallback = snap.activeNetworkKey == lastIpv4FallbackNetworkKey.load()
+        log.i {
+            "Ipv6 Recovery: tunnel $tunnelId upgrading ${mismatches.size} peer(s) to IPv6" +
+                if (afterFallback) " (after IPv4 fallback on ${snap.activeNetworkKey})" else ""
+        }
+        // If this upgrade is bad, IPv4 fallback must be allowed to run again on this network.
+        lastIpv4FallbackNetworkKey.store(null)
         val resolved = mode.config.buildResolvedPeers(mismatches)
         host.updatePeers(resolved)
         host.emit(TunnelEvent.RecoveredToIpv6(tunnelId))
+        return Ipv6UpgradeResult.Upgraded
     }
 
     companion object {
