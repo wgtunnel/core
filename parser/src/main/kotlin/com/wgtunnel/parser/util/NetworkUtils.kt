@@ -30,7 +30,7 @@ object NetworkUtils {
             val addr = InetAddress.getByName(ip.removeSurrounding("[", "]"))
             val maxPrefix = if (addr is Inet4Address) 32 else 128
             prefix in 0..maxPrefix
-        } catch (e: Exception) {
+        } catch (_ : Exception) {
             false
         }
     }
@@ -105,100 +105,65 @@ object NetworkUtils {
 
     @Throws(ConfigParseException::class)
     fun validateAmneziaSignaturePacket(value: String, fieldName: String) {
-        if (value.isBlank()) {
-            throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
-        }
+        var remaining = value
+        var tagCount = 0
 
-        var index = 0
-
-        // every tag mush start with <
-        while (index < value.length) {
-            if (value[index] != '<') {
-                throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
-            }
-            index++
-
-            val typeStart = index
-            while (index < value.length && value[index].isLetter()) {
-                index++
-            }
-            val tagType = value.substring(typeStart, index).lowercase()
-
-            if (tagType.isEmpty()) {
+        while (true) {
+            val start = remaining.indexOf('<')
+            if (start == -1) break
+            val end = remaining.indexOf('>', start + 1)
+            if (end == -1) {
                 throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
             }
 
-            // All tags except <t> require a space
-            if (tagType != "t") {
-                if (index >= value.length || value[index] != ' ') {
-                    throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
+            val parts =
+                remaining.substring(start + 1, end).trim().split(WHITESPACE).filter {
+                    it.isNotEmpty()
                 }
-                index++
+            if (parts.isEmpty()) {
+                throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
             }
 
+            val tagType = parts[0].lowercase()
+            val arg = parts.getOrNull(1).orEmpty()
             when (tagType) {
-                "b" -> index = parseStaticBytesTag(value, index, fieldName)
+                "b" -> validateSignatureBytesArg(arg, fieldName, value)
                 "r",
+                "rc",
                 "rd",
-                "rc" -> index = parseRandomTag(value, index, fieldName)
-                "t" -> {} // timestamp has no parameter
+                "dz" -> validateSignatureLengthArg(arg, fieldName, value)
+                "t",
+                "d",
+                "ds" -> Unit
                 else ->
                     throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
             }
 
-            // every tag must end with >
-            if (index >= value.length || value[index] != '>') {
-                throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
-            }
-            index++
+            tagCount++
+            remaining = remaining.substring(end + 1)
+        }
+
+        if (tagCount == 0) {
+            throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
         }
     }
 
-    private fun parseStaticBytesTag(value: String, start: Int, fieldName: String): Int {
-        var index = start
-
-        // must start with 0x
-        if (
-            index + 2 > value.length ||
-                !value.substring(index, index + 2).equals("0x", ignoreCase = true)
-        ) {
+    private fun validateSignatureBytesArg(arg: String, fieldName: String, value: String) {
+        val hex = arg.removePrefix("0x").removePrefix("0X")
+        if (hex.isEmpty() || hex.length % 2 != 0 || hex.any { !it.isHexDigit() }) {
             throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
         }
-        index += 2
-
-        val hexStart = index
-        while (index < value.length && value[index].isHexDigit()) {
-            index++
-        }
-
-        // must be a valid hex
-        val hexLength = index - hexStart
-        if (hexLength == 0 || hexLength % 2 != 0) {
-            throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
-        }
-        return index
     }
 
-    private fun parseRandomTag(value: String, start: Int, fieldName: String): Int {
-        var index = start
-        val numStart = index
-        while (index < value.length && value[index].isDigit()) {
-            index++
-        }
-
-        // must have at least one digit
-        if (index == numStart) {
+    private fun validateSignatureLengthArg(arg: String, fieldName: String, value: String) {
+        val size = arg.toIntOrNull()
+        if (size == null || size < 0) {
             throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
         }
-
-        // make sure it is a positive number
-        val size = value.substring(numStart, index).toIntOrNull()
-        if (size == null || size <= 0) {
-            throw ConfigParseException(ErrorType.INVALID_SIGNATURE_FORMAT, fieldName, value)
-        }
-        return index
     }
 
     private fun Char.isHexDigit(): Boolean =
         this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
+
+    private val WHITESPACE = Regex("\\s+")
 }

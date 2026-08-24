@@ -17,13 +17,16 @@ import com.wgtunnel.parser.PeerSection
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -32,8 +35,6 @@ import kotlinx.coroutines.withContext
 internal class TunnelRecovery(
     private val tunnelId: Int,
     private val mode: BackendMode,
-    private val recovery: Tunnel.Feature.Recovery,
-    private val failureThreshold: Duration,
     private val stabilizeWindow: Duration,
     private val host: Host,
 ) {
@@ -73,28 +74,17 @@ internal class TunnelRecovery(
         val networkHasIpv6: Boolean,
         val activeNetworkKey: String?,
         val deviceAwake: Boolean,
+        val recovery: Tunnel.Feature.Recovery = IDLE_RECOVERY,
     )
 
     fun start(scope: CoroutineScope): Job = scope.launch {
-        with(recovery) {
-            if (ipv4Fallback || seamlessRecovery || dynamicDnsRecovery) {
-                launch { runFailureRecovery() }
-            }
-        }
-        if (recovery.ipv6Recovery) {
-            launch { runIpv6EndpointRecoveryJob() }
-        }
+        launch { runFailureRecovery() }
+        launch { runIpv6EndpointRecoveryJob() }
     }
 
     @OptIn(ExperimentalAtomicApi::class)
     private fun CoroutineScope.runFailureRecovery() {
         launch {
-            if (
-                !recovery.dynamicDnsRecovery && !recovery.seamlessRecovery && !recovery.ipv4Fallback
-            ) {
-                return@launch
-            }
-
             val snapshots =
                 host
                     .observe()
@@ -114,8 +104,22 @@ internal class TunnelRecovery(
                             ),
                     )
 
-            // Log snapshot changes
             launch { snapshots.collect { snap -> log.d { "Running with state $snap" } } }
+            launch {
+                snapshots
+                    .map { it.recovery }
+                    .distinctUntilChanged()
+                    .collect { rec ->
+                        log.i {
+                            "Recovery features for tunnel $tunnelId: " +
+                                "seamless=${rec.seamlessRecovery} " +
+                                "ddns=${rec.dynamicDnsRecovery} " +
+                                "ipv4Fallback=${rec.ipv4Fallback} " +
+                                "ipv6=${rec.ipv6Recovery} " +
+                                "bounceDelay=${rec.bounceDelaySeconds}s"
+                        }
+                    }
+            }
 
             var seamlessRecoveryAttempted = 0
             // Track idle to active so leaving Doze refreshes the bounce counter as it is a common
@@ -137,7 +141,7 @@ internal class TunnelRecovery(
             while (isActive) {
                 // Arm only on HandshakeFailure — not Starting/unknown
                 snapshots.first { it.shouldArmFailureRecovery }
-                log.d { "Recovery episode started for tunnel $tunnelId" }
+                log.i { "Recovery episode started for tunnel $tunnelId" }
                 noteDeviceAwake(snapshots.value)
 
                 // Stay until Healthy (or network unusable), including bounce Down/Starting
@@ -157,52 +161,60 @@ internal class TunnelRecovery(
                         // stabilize window before we act
                     }
 
-                    delay(stabilizeWindow)
+                    val rec = snapshots.value.recovery
+                    val willTryIpv4 =
+                        rec.ipv4Fallback &&
+                            snapshots.value.activeNetworkKey != null &&
+                            snapshots.value.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
 
-                    // recheck state
-                    noteDeviceAwake(snapshots.value)
-                    if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
-                    if (snapshots.value.bootstrapPending) continue
-
-                    if (recovery.dynamicDnsRecovery) {
-                        tryDynamicDnsRecovery(snapshots.value)
+                    if (rec.dynamicDnsRecovery || willTryIpv4) {
                         delay(stabilizeWindow)
+
                         noteDeviceAwake(snapshots.value)
                         if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
                         if (snapshots.value.bootstrapPending) continue
-                    }
 
-                    val snap = snapshots.value
-                    if (
-                        recovery.ipv4Fallback &&
-                            snap.activeNetworkKey != null &&
-                            snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
-                    ) {
-                        tryLightIpv4Fallback(snap)
-                        delay(stabilizeWindow)
-                        noteDeviceAwake(snapshots.value)
-                        if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
-                        if (snapshots.value.bootstrapPending) continue
+                        if (snapshots.value.recovery.dynamicDnsRecovery) {
+                            tryDynamicDnsRecovery(snapshots.value)
+                            delay(stabilizeWindow)
+                            noteDeviceAwake(snapshots.value)
+                            if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
+                            if (snapshots.value.bootstrapPending) continue
+                        }
+
+                        val snap = snapshots.value
+                        if (
+                            snap.recovery.ipv4Fallback &&
+                                snap.activeNetworkKey != null &&
+                                snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
+                        ) {
+                            tryLightIpv4Fallback(snap)
+                            delay(stabilizeWindow)
+                            noteDeviceAwake(snapshots.value)
+                            if (!snapshots.value.shouldKeepFailureRecoveryEpisode) break
+                            if (snapshots.value.bootstrapPending) continue
+                        }
                     }
 
                     val beforeBounce = snapshots.value
                     noteDeviceAwake(beforeBounce)
                     if (
-                        recovery.seamlessRecovery &&
+                        beforeBounce.recovery.seamlessRecovery &&
                             beforeBounce.deviceAwake &&
                             !beforeBounce.bootstrapPending &&
                             seamlessRecoveryAttempted < MAX_SEAMLESS_RECOVERY_RETRIES
                     ) {
-                        delay(failureThreshold)
+                        delay(beforeBounce.recovery.bounceDelaySeconds.seconds)
                         val ready = snapshots.value
                         noteDeviceAwake(ready)
                         if (!ready.shouldKeepFailureRecoveryEpisode) break
                         // No full bounce while in Doze or when bootstrap is in flight
                         if (!ready.deviceAwake || ready.bootstrapPending) continue
+                        if (!ready.recovery.seamlessRecovery) continue
 
-                        tryFullTunnelBounce()
+                        tryFullTunnelBounce(ready.recovery.dynamicDnsRecovery)
                         seamlessRecoveryAttempted++
-                        log.d {
+                        log.i {
                             "Tunnel bounce attempt $seamlessRecoveryAttempted of $MAX_SEAMLESS_RECOVERY_RETRIES"
                         }
                     } else {
@@ -213,7 +225,7 @@ internal class TunnelRecovery(
 
                 // Healthy (or network unusable)
                 if (seamlessRecoveryAttempted != 0) {
-                    log.d {
+                    log.i {
                         "Recovery episode ended for tunnel $tunnelId (attempts=$seamlessRecoveryAttempted)"
                     }
                 }
@@ -328,12 +340,12 @@ internal class TunnelRecovery(
 
     // Full bounce now only does a fresh DNS request if tunnel is a DDNS tunnel.
     // NonCancellable so becoming Healthy mid-bounce cannot abort stop/start half-way.
-    private suspend fun tryFullTunnelBounce() =
+    private suspend fun tryFullTunnelBounce(withFreshResolution: Boolean) =
         withContext(NonCancellable) {
             log.i {
-                "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=${recovery.dynamicDnsRecovery})"
+                "Seamless Recovery: bouncing tunnel $tunnelId (with fresh DNS request=$withFreshResolution)"
             }
-            val didBounce = host.bounce(withFreshResolution = recovery.dynamicDnsRecovery)
+            val didBounce = host.bounce(withFreshResolution = withFreshResolution)
             if (didBounce) {
                 host.updateActiveTunnel {
                     it.copy(
@@ -348,7 +360,8 @@ internal class TunnelRecovery(
     @OptIn(ExperimentalAtomicApi::class)
     private fun isIpv6Recoverable(snap: Snapshot): Boolean {
         val key = snap.activeNetworkKey
-        return snap.transportHealthy &&
+        return snap.recovery.ipv6Recovery &&
+            snap.transportHealthy &&
             snap.networkHasIpv6 &&
             !snap.bootstrapPending &&
             key != null &&
@@ -358,6 +371,7 @@ internal class TunnelRecovery(
 
     @OptIn(ExperimentalAtomicApi::class)
     private fun ipv6SkipReason(snap: Snapshot): String? {
+        if (!snap.recovery.ipv6Recovery) return "ipv6 recovery disabled"
         if (!snap.transportHealthy) return "not healthy"
         if (snap.bootstrapPending) return "bootstrap pending"
         if (!snap.networkHasIpv6) return "network has no ipv6"
@@ -402,7 +416,7 @@ internal class TunnelRecovery(
                 }
             }
 
-            log.d { "IPv6 recovery job started for tunnel $tunnelId" }
+            log.i { "IPv6 recovery watcher started for tunnel $tunnelId" }
 
             while (isActive) {
                 val candidate = snapshots.first { isIpv6Recoverable(it) }
@@ -486,5 +500,8 @@ internal class TunnelRecovery(
         const val TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS = 8_000L
 
         const val MAX_SEAMLESS_RECOVERY_RETRIES = 8
+
+        val IDLE_RECOVERY =
+            Tunnel.Feature.Recovery(seamlessRecovery = false, dynamicDnsRecovery = false)
     }
 }

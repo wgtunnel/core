@@ -30,6 +30,8 @@ interface Backend {
 
     suspend fun bounceTunnelDevice(tunnelId: Int, withFreshResolution: Boolean): Boolean
 
+    suspend fun updateTunnel(tunnel: Tunnel): Result<Unit>
+
     val status: Flow<BackendStatus>
 
     val events: Flow<TunnelEvent>

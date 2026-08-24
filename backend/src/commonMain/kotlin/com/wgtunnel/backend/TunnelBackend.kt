@@ -32,6 +32,7 @@ import com.wgtunnel.backend.util.withEndpointsFrom
 import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.PeerSection
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
@@ -92,6 +93,7 @@ class TunnelBackend(
     private val nativeOwnedHandles = ConcurrentHashMap.newKeySet<Int>()
 
     init {
+        BackendLog.applyDefaultIfNeeded()
         loadBackendNativeLibrary()
         BackendRuntime.install(runtimeManager, this, applicationProvider)
         setStatusCallback(this)
@@ -265,7 +267,7 @@ class TunnelBackend(
         mode.config.peers.forEach { peer ->
             val chosen = runtimeMode.config.peers.firstOrNull { it.publicKey == peer.publicKey }
             val resolved = hostMap[peer.publicKey]
-            log.i {
+            log.d {
                 val key =
                     if (peer.publicKey.length <= 10) peer.publicKey
                     else "${peer.publicKey.take(4)}…${peer.publicKey.takeLast(4)}"
@@ -401,6 +403,13 @@ class TunnelBackend(
             mergedResolution.resolvedTunnelDnsConfig,
         )
         return true
+    }
+
+    override suspend fun updateTunnel(tunnel: Tunnel): Result<Unit> = tunnelMutex.withLock {
+        runCatching {
+            if (_status.value.activeTunnels[tunnel.id] == null) return@runCatching
+            updateActiveTunnel(tunnel.id) { it.copy(tunnel = tunnel) }
+        }
     }
 
     override suspend fun bounceTunnelDevice(tunnelId: Int, withFreshResolution: Boolean): Boolean =
@@ -652,7 +661,8 @@ class TunnelBackend(
 
     override suspend fun setBootstrapDnsMode(mode: DnsBoostrapMode) {
         _status.update { it.copy(dnsMode = mode) }
-        log.d { "DNS Bootstrap mode set to: $mode" }
+        log.i { "DNS Bootstrap mode set to: ${mode::class.simpleName}" }
+        log.d { "DNS Bootstrap mode detail: $mode" }
     }
 
     override suspend fun stopAllActiveTunnels() = tunnelMutex.withLock {
@@ -710,153 +720,155 @@ class TunnelBackend(
         updateActiveTunnel(id) { tunnel -> tunnel.copy(bootstrapState = newState) }
     }
 
+    private fun liveRecoveryFeature(
+        active: ActiveTunnel,
+        mode: BackendMode,
+    ): Tunnel.Feature.Recovery {
+        val hasDynamicEndpoints = mode.config.hasDynamicEndpoints()
+        val feature =
+            active.tunnel?.features?.filterIsInstance<Tunnel.Feature.Recovery>()?.firstOrNull()
+                ?: TunnelRecovery.IDLE_RECOVERY
+        val ipv6Restore =
+            (active.tunnel?.ipStrategy as? Tunnel.IpStrategy.PreferIpv6)?.recoveryEnabled ?: false
+        return feature.copy(
+            dynamicDnsRecovery = feature.dynamicDnsRecovery && hasDynamicEndpoints,
+            ipv6Recovery = hasDynamicEndpoints && ipv6Restore,
+            ipv4Fallback = feature.ipv4Fallback && hasDynamicEndpoints,
+        )
+    }
+
     private fun startTunnelJobs(tunnel: Tunnel, mode: BackendMode): Job {
         return scope.launch {
+            log.i { "Tunnel jobs started for tunnel ${tunnel.id} (${tunnel.name})" }
             supervisorScope {
-                tunnel.features.forEach { feature ->
-                    when (feature) {
-                        is Tunnel.Feature.ActiveConfigMonitor -> {
-                            val monitor =
-                                ActiveConfigMonitor(
-                                    tunnelId = tunnel.id,
-                                    interval = feature.intervalSeconds.seconds,
-                                    host =
-                                        object : ActiveConfigMonitor.Host {
-                                            override suspend fun getActiveConfig(): ActiveConfig? {
-                                                val handle = byTunnelId[tunnel.id] ?: return null
-                                                return engine.getActiveConfig(handle, mode)
-                                            }
+                val monitor =
+                    ActiveConfigMonitor(
+                        tunnelId = tunnel.id,
+                        host =
+                            object : ActiveConfigMonitor.Host {
+                                override suspend fun getActiveConfig(): ActiveConfig? {
+                                    val handle = byTunnelId[tunnel.id] ?: return null
+                                    return engine.getActiveConfig(handle, mode)
+                                }
 
-                                            override fun updateActiveConfig(config: ActiveConfig?) {
-                                                updateActiveTunnel(tunnel.id) {
-                                                    it.copy(activeConfig = config)
-                                                }
-                                            }
-                                        },
-                                )
-                            monitor.start(this)
-                        }
-                        is Tunnel.Feature.Recovery -> {
-                            val hasDynamicEndpoints = mode.config.hasDynamicEndpoints()
-                            val recovery =
-                                TunnelRecovery(
-                                    tunnelId = tunnel.id,
-                                    mode = mode,
-                                    recovery =
-                                        feature.copy(
-                                            dynamicDnsRecovery =
-                                                feature.dynamicDnsRecovery && hasDynamicEndpoints,
-                                            ipv6Recovery =
-                                                hasDynamicEndpoints &&
-                                                    (tunnel.ipStrategy
-                                                            as? Tunnel.IpStrategy.PreferIpv6)
-                                                        ?.recoveryEnabled ?: false,
-                                            ipv4Fallback = hasDynamicEndpoints,
-                                        ),
-                                    failureThreshold =
-                                        TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
-                                            .milliseconds,
-                                    stabilizeWindow =
-                                        TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS
-                                            .milliseconds,
-                                    host =
-                                        object : TunnelRecovery.Host {
-                                            override fun observe(): Flow<TunnelRecovery.Snapshot> =
-                                                combine(
-                                                        status.mapNotNull {
-                                                            it.activeTunnels[tunnel.id]
-                                                        },
-                                                        networkMonitor.networkState.filterNotNull(),
-                                                        powerManager.deviceAwake,
-                                                    ) { active, network, awake ->
-                                                        TunnelRecovery.Snapshot(
-                                                            shouldArmFailureRecovery =
-                                                                active.shouldArmFailureRecovery(
-                                                                    network.isUsable
-                                                                ),
-                                                            shouldKeepFailureRecoveryEpisode =
-                                                                active
-                                                                    .shouldKeepFailureRecoveryEpisode(
-                                                                        network.isUsable
-                                                                    ),
-                                                            transportHealthy =
-                                                                active.isTransportHealthy(),
-                                                            bootstrapPending =
-                                                                active.bootstrapState is
-                                                                    BootstrapState.ResolvingDns ||
-                                                                    active.bootstrapState is
-                                                                        BootstrapState.UpdatingPeers,
-                                                            lastResolvedPeers =
-                                                                active.lastBootstrapResolution
-                                                                    ?.peerKeyResults,
-                                                            networkHasIpv6 = network.hasIpv6,
-                                                            activeNetworkKey = network.key,
-                                                            deviceAwake = awake,
-                                                        )
-                                                    }
-                                                    .distinctUntilChanged()
+                                override fun updateActiveConfig(config: ActiveConfig?) {
+                                    updateActiveTunnel(tunnel.id) {
+                                        it.copy(
+                                            activeConfig = config,
+                                            lastStatsAtMs = System.currentTimeMillis(),
+                                        )
+                                    }
+                                }
 
-                                            override suspend fun getActiveConfig(): ActiveConfig? {
-                                                val handle = byTunnelId[tunnel.id] ?: return null
-                                                return engine.getActiveConfig(handle, mode)
-                                            }
+                                override fun isEnabled(): Boolean =
+                                    _status.value.activeTunnels[tunnel.id]?.tunnel?.features?.any {
+                                        it is Tunnel.Feature.ActiveConfigMonitor
+                                    } == true
 
-                                            override suspend fun resolveFresh():
-                                                BootstrapResolution? {
-                                                val active =
-                                                    _status.value.activeTunnels[tunnel.id]
-                                                        ?: return null
-                                                val runtimeTunnelDnsConfig =
-                                                    active.getRuntimeTunnelDnsConfig()
-                                                return try {
-                                                    withTimeout(10.seconds) {
-                                                        endpointResolver.resolve(
-                                                            mode,
-                                                            runtimeTunnelDnsConfig,
-                                                        )
-                                                    }
-                                                } catch (_: TimeoutCancellationException) {
-                                                    log.w {
-                                                        "Recovery Resolve: fresh peer resolve timed out for tunnel ${tunnel.id}"
-                                                    }
-                                                    null
-                                                }
-                                            }
+                                override fun interval(): Duration {
+                                    val seconds =
+                                        _status.value.activeTunnels[tunnel.id]
+                                            ?.tunnel
+                                            ?.features
+                                            ?.filterIsInstance<Tunnel.Feature.ActiveConfigMonitor>()
+                                            ?.firstOrNull()
+                                            ?.intervalSeconds ?: 3
+                                    return seconds.seconds
+                                }
+                            },
+                    )
+                monitor.start(this)
 
-                                            override suspend fun updatePeers(
-                                                peers: List<PeerSection>
-                                            ) {
-                                                val handle = byTunnelId[tunnel.id] ?: return
-                                                engine.updatePeers(handle, mode, peers)
-                                            }
+                val recovery =
+                    TunnelRecovery(
+                        tunnelId = tunnel.id,
+                        mode = mode,
+                        stabilizeWindow =
+                            TunnelRecovery.TUNNEL_HEALTH_STABILIZE_WINDOW_MILLIS.milliseconds,
+                        host =
+                            object : TunnelRecovery.Host {
+                                override fun observe(): Flow<TunnelRecovery.Snapshot> =
+                                    combine(
+                                            status.mapNotNull { it.activeTunnels[tunnel.id] },
+                                            networkMonitor.networkState.filterNotNull(),
+                                            powerManager.deviceAwake,
+                                        ) { active, network, awake ->
+                                            TunnelRecovery.Snapshot(
+                                                shouldArmFailureRecovery =
+                                                    active.shouldArmFailureRecovery(
+                                                        network.isUsable
+                                                    ),
+                                                shouldKeepFailureRecoveryEpisode =
+                                                    active.shouldKeepFailureRecoveryEpisode(
+                                                        network.isUsable
+                                                    ),
+                                                transportHealthy = active.isTransportHealthy(),
+                                                bootstrapPending =
+                                                    active.bootstrapState is
+                                                        BootstrapState.ResolvingDns ||
+                                                        active.bootstrapState is
+                                                            BootstrapState.UpdatingPeers,
+                                                lastResolvedPeers =
+                                                    active.lastBootstrapResolution?.peerKeyResults,
+                                                networkHasIpv6 = network.hasIpv6,
+                                                activeNetworkKey = network.key,
+                                                deviceAwake = awake,
+                                                recovery = liveRecoveryFeature(active, mode),
+                                            )
+                                        }
+                                        .distinctUntilChanged()
 
-                                            override suspend fun bounce(
-                                                withFreshResolution: Boolean
-                                            ): Boolean {
-                                                return bounceTunnelDevice(
-                                                    tunnel.id,
-                                                    withFreshResolution,
-                                                )
-                                            }
+                                override suspend fun getActiveConfig(): ActiveConfig? {
+                                    val handle = byTunnelId[tunnel.id] ?: return null
+                                    return engine.getActiveConfig(handle, mode)
+                                }
 
-                                            override fun updateActiveTunnel(
-                                                transform: (ActiveTunnel) -> ActiveTunnel
-                                            ) {
-                                                this@TunnelBackend.updateActiveTunnel(
-                                                    tunnel.id,
-                                                    transform,
-                                                )
-                                            }
+                                override suspend fun resolveFresh(): BootstrapResolution? {
+                                    val active =
+                                        _status.value.activeTunnels[tunnel.id] ?: return null
+                                    val runtimeTunnelDnsConfig = active.getRuntimeTunnelDnsConfig()
+                                    return try {
+                                        withTimeout(10.seconds) {
+                                            endpointResolver.resolve(
+                                                mode,
+                                                runtimeTunnelDnsConfig,
+                                            )
+                                        }
+                                    } catch (_: TimeoutCancellationException) {
+                                        log.w {
+                                            "Recovery Resolve: fresh peer resolve timed out for tunnel ${tunnel.id}"
+                                        }
+                                        null
+                                    }
+                                }
 
-                                            override suspend fun emit(event: TunnelEvent) {
-                                                _events.emit(event)
-                                            }
-                                        },
-                                )
-                            recovery.start(this)
-                        }
-                    }
-                }
+                                override suspend fun updatePeers(peers: List<PeerSection>) {
+                                    val handle = byTunnelId[tunnel.id] ?: return
+                                    engine.updatePeers(handle, mode, peers)
+                                }
+
+                                override suspend fun bounce(withFreshResolution: Boolean): Boolean {
+                                    return bounceTunnelDevice(
+                                        tunnel.id,
+                                        withFreshResolution,
+                                    )
+                                }
+
+                                override fun updateActiveTunnel(
+                                    transform: (ActiveTunnel) -> ActiveTunnel
+                                ) {
+                                    this@TunnelBackend.updateActiveTunnel(
+                                        tunnel.id,
+                                        transform,
+                                    )
+                                }
+
+                                override suspend fun emit(event: TunnelEvent) {
+                                    _events.emit(event)
+                                }
+                            },
+                    )
+                recovery.start(this)
                 awaitCancellation()
             }
         }

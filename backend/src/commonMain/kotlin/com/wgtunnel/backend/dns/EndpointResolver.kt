@@ -35,8 +35,9 @@ internal class EndpointResolver(
         var resolvedDns: TunnelDnsConfig? = if (dnsNeedsResolve) null else tunnelDnsConfig
 
         if (staticPeers.isNotEmpty()) {
-            log.i {
-                "Static IP peers (skip DNS): " +
+            log.i { "Static IP peers (skip DNS): ${staticPeers.size}" }
+            log.d {
+                "Static IP peers: " +
                     staticPeers.joinToString { "${shortKey(it.publicKey)}=${it.endpoint}" }
             }
         }
@@ -48,8 +49,9 @@ internal class EndpointResolver(
 
         log.i {
             "Bootstrap resolve starting: mode=${mode::class.simpleName} " +
-                "hosts=${peersToResolve.map { it.endpoint }} dnsNeedsResolve=$dnsNeedsResolve"
+                "hosts=${peersToResolve.size} dnsNeedsResolve=$dnsNeedsResolve"
         }
+        log.d { "Bootstrap hosts=${peersToResolve.map { it.endpoint }}" }
 
         // Wait for connectivity
         val state = networkMonitor.networkState.first { it?.hasNetwork() == true }
@@ -74,9 +76,10 @@ internal class EndpointResolver(
                     is DnsBoostrapMode.Custom -> createCustomResolver(dnsMode.config, bypassNeeded)
                 }
             log.i {
-                "Resolve attempt $attempt via ${describeDnsMode(dnsMode)} " +
+                "Resolve attempt $attempt via ${dnsModeLabel(dnsMode)} " +
                     "bypass=$bypassNeeded (VPN/KS underlay)"
             }
+            log.d { "Resolve attempt $attempt ${describeDnsMode(dnsMode)}" }
 
             var progressed = false
 
@@ -88,7 +91,8 @@ internal class EndpointResolver(
                     try {
                         resolver.resolve(host)
                     } catch (t: Exception) {
-                        log.w(t) { "Peer resolve threw host=$host peer=${shortKey(publicKey)}" }
+                        log.w(t) { "Peer resolve threw for ${shortKey(publicKey)}" }
+                        log.d { "Peer resolve host=$host" }
                         DnsBootstrapResult()
                     }
                 if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
@@ -96,13 +100,15 @@ internal class EndpointResolver(
                         result.copy(
                             ipv6 = result.ipv6.map { if (it.startsWith("[")) it else "[$it]" }
                         )
-                    log.i {
+                    log.i { "Resolved peer ${shortKey(publicKey)}" }
+                    log.d {
                         "Resolved peer ${shortKey(publicKey)} $endpoint → " +
                             "v4=${result.ipv4} v6=${result.ipv6}"
                     }
                     progressed = true
                 } else {
-                    log.w { "No addresses yet for peer ${shortKey(publicKey)} host=$host" }
+                    log.w { "No addresses yet for peer ${shortKey(publicKey)}" }
+                    log.d { "No addresses yet host=$host" }
                 }
             }
 
@@ -113,15 +119,18 @@ internal class EndpointResolver(
                         try {
                             resolver.resolve(host)
                         } catch (t: Exception) {
-                            log.w(t) { "Tunnel DNS resolve threw host=$host" }
+                            log.w(t) { "Tunnel DNS resolve threw" }
+                            log.d { "Tunnel DNS resolve host=$host" }
                             DnsBootstrapResult()
                         }
                     if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
                         resolvedDns = tunnelDnsConfig.withResolvedAddresses(result)
-                        log.i { "Tunnel DNS upstream $host → v4=${result.ipv4} v6=${result.ipv6}" }
+                        log.i { "Tunnel DNS upstream resolved" }
+                        log.d { "Tunnel DNS upstream $host → v4=${result.ipv4} v6=${result.ipv6}" }
                         progressed = true
                     } else {
-                        log.w { "No addresses yet for tunnel DNS host=$host" }
+                        log.w { "No addresses yet for tunnel DNS host" }
+                        log.d { "No addresses yet for tunnel DNS host=$host" }
                     }
                 }
             }
@@ -150,6 +159,12 @@ internal class EndpointResolver(
         log.w { "Bootstrap resolve cancelled with peers=${peerResults.size}" }
         BootstrapResolution(peerResults, resolvedDns)
     }
+
+    private fun dnsModeLabel(mode: DnsBoostrapMode): String =
+        when (mode) {
+            is DnsBoostrapMode.System -> "system/local underlay"
+            is DnsBoostrapMode.Custom -> "custom protocol=${mode.config.protocol}"
+        }
 
     private fun describeDnsMode(mode: DnsBoostrapMode): String =
         when (mode) {

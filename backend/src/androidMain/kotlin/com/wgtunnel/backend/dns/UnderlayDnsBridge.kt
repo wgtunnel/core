@@ -33,7 +33,8 @@ internal object UnderlayDnsBridge {
         val network =
             underlayNetwork.load()
                 ?: run {
-                    log.w { "lookupOnUnderlayNetwork: no underlay for $host" }
+                    log.w { "lookupOnUnderlayNetwork: no underlay network" }
+                    log.d { "lookupOnUnderlayNetwork: no underlay for $host" }
                     return ""
                 }
         return try {
@@ -46,7 +47,8 @@ internal object UnderlayDnsBridge {
                 }
             filtered.mapNotNull { it.hostAddress }.joinToString("\n")
         } catch (e: Exception) {
-            log.e(e) { "lookupOnUnderlayNetwork failed for $host" }
+            log.e(e) { "lookupOnUnderlayNetwork failed" }
+            log.d { "lookupOnUnderlayNetwork failed for $host" }
             ""
         }
     }

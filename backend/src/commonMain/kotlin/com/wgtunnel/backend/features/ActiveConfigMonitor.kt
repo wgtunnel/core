@@ -7,7 +7,6 @@ import kotlinx.coroutines.*
 
 internal class ActiveConfigMonitor(
     private val tunnelId: Int,
-    private val interval: Duration,
     private val host: Host,
 ) {
 
@@ -17,11 +16,42 @@ internal class ActiveConfigMonitor(
         suspend fun getActiveConfig(): ActiveConfig?
 
         fun updateActiveConfig(config: ActiveConfig?)
+
+        fun isEnabled(): Boolean
+
+        fun interval(): Duration
     }
 
     fun start(scope: CoroutineScope): Job = scope.launch {
+        log.i { "Stats monitor job started for tunnel $tunnelId" }
+        var enabled = false
+        var interval = Duration.ZERO
         var consecutiveMisses = 0
         while (isActive) {
+            val nowEnabled = host.isEnabled()
+            val nowInterval = host.interval()
+            if (nowEnabled != enabled) {
+                enabled = nowEnabled
+                if (enabled) {
+                    log.i {
+                        "Stats monitor enabled for tunnel $tunnelId " +
+                            "(interval=${nowInterval.inWholeSeconds}s)"
+                    }
+                } else {
+                    log.i { "Stats monitor disabled for tunnel $tunnelId" }
+                }
+            } else if (enabled && nowInterval != interval && interval != Duration.ZERO) {
+                log.i {
+                    "Stats monitor interval ${interval.inWholeSeconds}s → " +
+                        "${nowInterval.inWholeSeconds}s for tunnel $tunnelId"
+                }
+            }
+            interval = nowInterval
+
+            if (!nowEnabled) {
+                delay(nowInterval)
+                continue
+            }
             val config = host.getActiveConfig()
             if (config == null) {
                 // During bounce/restart we don't tear down monitor
@@ -31,12 +61,12 @@ internal class ActiveConfigMonitor(
                         "no handle/config for tunnel $tunnelId (miss $consecutiveMisses), retrying"
                     }
                 }
-                delay(interval)
+                delay(nowInterval)
                 continue
             }
             consecutiveMisses = 0
             host.updateActiveConfig(config)
-            delay(interval)
+            delay(nowInterval)
         }
     }
 }

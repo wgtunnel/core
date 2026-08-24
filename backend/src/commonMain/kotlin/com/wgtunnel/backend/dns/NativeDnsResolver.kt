@@ -32,17 +32,20 @@ object NativeDnsResolver {
                         )
                     }
                 parseBootstrapResult(raw).also { result ->
-                    log.i {
+                    log.i { "Native DNS resolve protocol=$protocol bypass=$bypass" }
+                    log.d {
                         "Native resolve host=$host protocol=$protocol bypass=$bypass " +
                             "upstream=${resolvedUpstream.ifBlank { originalUpstream.ifBlank { "(local)" } }} " +
                             "→ v4=${result.ipv4} v6=${result.ipv6}"
                     }
                 }
             } catch (e: TimeoutCancellationException) {
-                log.e(e) { "DNS bootstrap timed out host=$host protocol=$protocol" }
+                log.e(e) { "DNS bootstrap timed out protocol=$protocol" }
+                log.d { "DNS bootstrap timed out host=$host" }
                 throw RuntimeException("DNS bootstrap timed out for $host", e)
             } catch (e: Exception) {
-                log.w(e) { "DNS bootstrap failed host=$host protocol=$protocol" }
+                log.w(e) { "DNS bootstrap failed protocol=$protocol" }
+                log.d { "DNS bootstrap failed host=$host" }
                 throw e
             }
         }

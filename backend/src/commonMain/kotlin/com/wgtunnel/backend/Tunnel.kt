@@ -70,12 +70,14 @@ interface Tunnel {
          *   once per network when transport is Healthy
          * @param ipv4Fallback runs once per network when the tunnel is unhealthy and peers are on
          *   IPv6, forcing a switch to IPv4 endpoints.
+         * @param bounceDelaySeconds wait after HandshakeFailure before a full bounce.
          */
         data class Recovery(
             val seamlessRecovery: Boolean,
             val dynamicDnsRecovery: Boolean,
             internal val ipv4Fallback: Boolean = false,
             internal val ipv6Recovery: Boolean = false,
+            val bounceDelaySeconds: Int = 30,
         ) : Feature
     }
 }

@@ -8,7 +8,7 @@ actual class SystemDnsResolver actual constructor(networkMonitor: NetworkMonitor
     private val log = Logger.withTag("SystemDnsResolver")
 
     override suspend fun resolve(host: String): DnsBootstrapResult {
-        log.i { "Resolving $host via local underlay DNS (bypass mark + physical DNS servers)" }
+        log.d { "Resolving $host via local underlay DNS (bypass mark + physical DNS servers)" }
         return NativeDnsResolver.resolveHostBootstrap(
             host = host,
             protocol = "local",

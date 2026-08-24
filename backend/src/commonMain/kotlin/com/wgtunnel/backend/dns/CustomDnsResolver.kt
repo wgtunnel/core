@@ -31,7 +31,8 @@ class CustomDnsResolver(
                     addAll(resolutionResult.ipv6.map { it.removeSurrounding("[", "]") })
                 }
                 if (ips.isEmpty()) {
-                    log.w { "Failed to resolve custom DNS upstream host: $upstream" }
+                    log.w { "Failed to resolve custom DNS upstream host" }
+                    log.d { "Failed to resolve custom DNS upstream host: $upstream" }
                     return DnsBootstrapResult()
                 }
                 ips.map { DnsHostUtils.replaceHostWithIP(upstream, it) }
@@ -39,7 +40,8 @@ class CustomDnsResolver(
                 listOf(upstream)
             }
 
-        log.i {
+        log.i { "Custom DNS resolve protocol=${dnsConfig.protocol} bypass=$bypass" }
+        log.d {
             "Custom DNS protocol=${dnsConfig.protocol} host=$host " +
                 "upstreams=$resolvedUpstreams bypass=$bypass"
         }
@@ -53,7 +55,8 @@ class CustomDnsResolver(
                 bypass = bypass,
             )
         } catch (e: Exception) {
-            log.w(e) { "Custom DNS resolution failed for host=$host upstreams=$resolvedUpstreams" }
+            log.w(e) { "Custom DNS resolution failed protocol=${dnsConfig.protocol}" }
+            log.d { "Custom DNS resolution failed host=$host upstreams=$resolvedUpstreams" }
             DnsBootstrapResult()
         }
     }
