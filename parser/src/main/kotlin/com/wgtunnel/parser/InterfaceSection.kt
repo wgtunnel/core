@@ -50,6 +50,7 @@ data class InterfaceSection(
     @SerialName("RejectAfterTime") val rejectAfterTime: String? = null,
     @SerialName("KeepaliveTimeout") val keepaliveTimeout: String? = null,
     @SerialName("MaxHandshakeAttempts") val maxHandshakeAttempts: String? = null,
+    @SerialName("RandomTrailers") val randomTrailers: String? = null,
     val comments: List<String> = emptyList(),
 ) {
 
@@ -226,5 +227,14 @@ data class InterfaceSection(
                 if (it.isNotBlank() && !NetworkUtils.isValidDnsEntry(it))
                     throw ConfigParseException(ErrorType.INVALID_DNS_ENTRY, "Interface.DNS", it)
             }
+        randomTrailers?.let {
+            if (it !in listOf("on", "off")) {
+                throw ConfigParseException(
+                    ErrorType.INVALID_RANDOM_TRAILER_VALUE,
+                    "Interface.RandomTrailers",
+                    it,
+                )
+            }
+        }
     }
 }

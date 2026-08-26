@@ -30,7 +30,7 @@ object NetworkUtils {
             val addr = InetAddress.getByName(ip.removeSurrounding("[", "]"))
             val maxPrefix = if (addr is Inet4Address) 32 else 128
             prefix in 0..maxPrefix
-        } catch (_ : Exception) {
+        } catch (_: Exception) {
             false
         }
     }

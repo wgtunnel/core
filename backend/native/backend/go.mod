@@ -1,6 +1,6 @@
 module github.com/wgtunnel/backend
 
-go 1.26.5
+go 1.27.0
 
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.0.20260805
@@ -40,6 +40,6 @@ require (
 	honnef.co/go/tools v0.7.0 // indirect
 )
 
-replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20260810025653-bcda31ea0ddf
+replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20260826061744-01780d1dd3b8
 
-replace github.com/artem-russkikh/wireproxy-awg => github.com/wgtunnel/wireproxy-awg v0.0.0-20260803064801-80976931c1f3
+replace github.com/artem-russkikh/wireproxy-awg => github.com/wgtunnel/wireproxy-awg v0.0.0-20260826063852-a3a8a1aff15f

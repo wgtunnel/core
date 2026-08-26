@@ -58,6 +58,10 @@ object ConfigFormatter {
         iface.keepaliveTimeout?.let { sb.appendLine("KeepaliveTimeout = $it") }
         iface.maxHandshakeAttempts?.let { sb.appendLine("MaxHandshakeAttempts = $it") }
 
+        // AmneziaWG 3.1
+        iface.randomTrailers?.let { sb.appendLine("RandomTrailers = $it") }
+
+        // Android
         iface.includedApplications
             ?.takeIf { it.isNotEmpty() }
             ?.let { sb.appendLine("IncludedApplications = ${it.joinToString(",")}") }

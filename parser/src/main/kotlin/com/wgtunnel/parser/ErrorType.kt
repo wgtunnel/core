@@ -24,4 +24,5 @@ enum class ErrorType {
     INVALID_HEX_KEY,
     INVALID_VALUE,
     IPC_PARSE_FAILED,
+    INVALID_RANDOM_TRAILER_VALUE,
 }

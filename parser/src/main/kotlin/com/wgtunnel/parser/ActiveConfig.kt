@@ -72,6 +72,7 @@ data class ActiveConfig(val interfaceSection: InterfaceSection, val peers: List<
                         "reject_after_time" -> interfaceMap["RejectAfterTime"] = value
                         "keepalive_timeout" -> interfaceMap["KeepaliveTimeout"] = value
                         "max_handshake_attempts" -> interfaceMap["MaxHandshakeAttempts"] = value
+                        "random_trailers" -> interfaceMap["RandomTrailers"] = value
 
                         "public_key" -> {
                             currentPeerMap = mutableMapOf<String, String>().also { peerMaps += it }
@@ -87,6 +88,7 @@ data class ActiveConfig(val interfaceSection: InterfaceSection, val peers: List<
                             currentPeerMap?.put("LastHandshakeNanos", value)
                         "tx_bytes" -> currentPeerMap?.put("TxBytes", value)
                         "rx_bytes" -> currentPeerMap?.put("RxBytes", value)
+                        "udp_window" -> currentPeerMap?.put("UdpWindow", value)
                         "protocol_version" -> currentPeerMap?.put("ProtocolVersion", value)
                         "allowed_ip" -> {
                             val existing = currentPeerMap?.get("AllowedIPs") ?: ""

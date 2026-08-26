@@ -243,6 +243,7 @@ data class Config(
                 rejectAfterTime = m["RejectAfterTime"],
                 keepaliveTimeout = m["KeepaliveTimeout"],
                 maxHandshakeAttempts = m["MaxHandshakeAttempts"],
+                randomTrailers = m["RandomTrailers"],
                 includedApplications = m.getList("IncludedApplications"),
                 excludedApplications = m.getList("ExcludedApplications"),
             )
