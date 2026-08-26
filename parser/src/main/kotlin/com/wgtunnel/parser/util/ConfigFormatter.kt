@@ -60,6 +60,7 @@ object ConfigFormatter {
 
         // AmneziaWG 3.1
         iface.randomTrailers?.let { sb.appendLine("RandomTrailers = $it") }
+        iface.disableCookies?.let { sb.appendLine("DisableCookies = $it") }
 
         // Android
         iface.includedApplications

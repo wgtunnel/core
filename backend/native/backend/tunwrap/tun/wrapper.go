@@ -158,15 +158,15 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		}
 		toFake := isDNSQueryToFake(p, f.fakeDNSv4, f.fakeDNSv6)
 		if !toFake && policy == "allow" {
-			log.Debug(tag, "dns: allow tcp/53 %s to %s, pass", p.SrcIP, p.DstIP)
+			//log.Debug(tag, "dns: allow tcp/53 %s to %s, pass", p.SrcIP, p.DstIP)
 			return false
 		}
 		if !toFake {
-			log.Debug(tag, "dns: block tcp/53 %s to %s, drop", p.SrcIP, p.DstIP)
+			//log.Debug(tag, "dns: block tcp/53 %s to %s, drop", p.SrcIP, p.DstIP)
 			return true
 		}
 		// FakeDNS over TCP, drop
-		log.Debug(tag, "dns: drop tcp/53 fake %s to %s", p.SrcIP, p.DstIP)
+		//log.Debug(tag, "dns: drop tcp/53 fake %s to %s", p.SrcIP, p.DstIP)
 		return true
 	}
 
@@ -191,19 +191,19 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 	// even when the client targeted 8.8.8.8 / etc.
 	switch {
 	case suffixHit:
-		log.Debug(tag, "dns: suffix-match name=%s dest=%s → hijack", qname, p.DstIP)
+		//log.Debug(tag, "dns: suffix-match name=%s dest=%s → hijack", qname, p.DstIP)
 	case toFake:
-		log.Debug(tag, "dns: fake name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
+		//log.Debug(tag, "dns: fake name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
 	default:
 		switch policy {
 		case "allow":
-			log.Debug(tag, "dns: allow name=%s dest=%s → pass", emptyName(qname, qok), p.DstIP)
+			//log.Debug(tag, "dns: allow name=%s dest=%s → pass", emptyName(qname, qok), p.DstIP)
 			return false
 		case "drop":
-			log.Debug(tag, "dns: block name=%s dest=%s → drop", emptyName(qname, qok), p.DstIP)
+			//log.Debug(tag, "dns: block name=%s dest=%s → drop", emptyName(qname, qok), p.DstIP)
 			return true
 		default: // redirect
-			log.Debug(tag, "dns: redirect name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
+			//log.Debug(tag, "dns: redirect name=%s dest=%s → hijack", emptyName(qname, qok), p.DstIP)
 		}
 	}
 

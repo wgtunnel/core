@@ -51,8 +51,11 @@ data class InterfaceSection(
     @SerialName("KeepaliveTimeout") val keepaliveTimeout: String? = null,
     @SerialName("MaxHandshakeAttempts") val maxHandshakeAttempts: String? = null,
     @SerialName("RandomTrailers") val randomTrailers: String? = null,
+    @SerialName("DisableCookies") val disableCookies: String? = null,
     val comments: List<String> = emptyList(),
 ) {
+
+    private val validAmneziaBooleans = listOf("on", "off", "true", "false", "1", "0")
 
     val allIncludedApps: List<String>
         get() = includedApplications.orEmpty()
@@ -228,10 +231,19 @@ data class InterfaceSection(
                     throw ConfigParseException(ErrorType.INVALID_DNS_ENTRY, "Interface.DNS", it)
             }
         randomTrailers?.let {
-            if (it !in listOf("on", "off")) {
+            if (it !in validAmneziaBooleans) {
                 throw ConfigParseException(
                     ErrorType.INVALID_RANDOM_TRAILER_VALUE,
                     "Interface.RandomTrailers",
+                    it,
+                )
+            }
+        }
+        disableCookies?.let {
+            if (it !in validAmneziaBooleans) {
+                throw ConfigParseException(
+                    ErrorType.INVALID_DISABLE_COOKIES_VALUE,
+                    "Interface.DisableCookies",
                     it,
                 )
             }

@@ -73,7 +73,7 @@ data class ActiveConfig(val interfaceSection: InterfaceSection, val peers: List<
                         "keepalive_timeout" -> interfaceMap["KeepaliveTimeout"] = value
                         "max_handshake_attempts" -> interfaceMap["MaxHandshakeAttempts"] = value
                         "random_trailers" -> interfaceMap["RandomTrailers"] = value
-
+                        "disable_cookies" -> interfaceMap["DisableCookies"] = value
                         "public_key" -> {
                             currentPeerMap = mutableMapOf<String, String>().also { peerMaps += it }
                             currentPeerMap["PublicKey"] = value

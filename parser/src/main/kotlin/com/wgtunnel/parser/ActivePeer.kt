@@ -14,7 +14,6 @@ data class ActivePeer(
     @SerialName("LastHandshakeNanos") val lastHandshakeNanos: Long? = null,
     @SerialName("TxBytes") val txBytes: Long? = null,
     @SerialName("RxBytes") val rxBytes: Long? = null,
-    @SerialName("UdpWindow") val udpWindow: Long? = null,
 ) {
 
     val host: String?

@@ -244,6 +244,7 @@ data class Config(
                 keepaliveTimeout = m["KeepaliveTimeout"],
                 maxHandshakeAttempts = m["MaxHandshakeAttempts"],
                 randomTrailers = m["RandomTrailers"],
+                disableCookies = m["DisableCookies"],
                 includedApplications = m.getList("IncludedApplications"),
                 excludedApplications = m.getList("ExcludedApplications"),
             )
