@@ -149,55 +149,64 @@ data class InterfaceSection(
         }
 
         listOf(h1, h2, h3, h4).forEachIndexed { i, h ->
-            if (h != null && !NetworkUtils.isValidAmneziaHeader(h)) {
-                throw ConfigParseException(
-                    ErrorType.INVALID_HEADER_FORMAT,
-                    "Interface.H${i + 1}",
-                    h,
-                )
-            }
-        }
-
-        listOf(i1 to "I1", i2 to "I2", i3 to "I3", i4 to "I4", i5 to "I5").forEach {
-            (sig, shortName) ->
-            sig?.let { NetworkUtils.validateAmneziaSignaturePacket(it, "Interface.$shortName") }
-        }
-
-        headerProtectionKey?.let { key ->
-            if (!NetworkUtils.isValidBase64(key)) {
-                throw ConfigParseException(
-                    ErrorType.INVALID_BASE64_KEY,
-                    "Interface.HeaderProtectionKey",
-                    key,
-                )
-            }
-            listOf(
-                    s1 to "S1",
-                    s2 to "S2",
-                    s3 to "S3",
-                    s4 to "S4",
-                )
-                .forEach { (value, name) ->
-                    val junk = value ?: 0
-                    if (junk < 12) {
+            h?.takeIf { it.isNotBlank() }
+                ?.let {
+                    if (!NetworkUtils.isValidAmneziaHeader(it)) {
                         throw ConfigParseException(
-                            ErrorType.INVALID_HEADER_PROTECTION_PADDING,
-                            "Interface.$name",
-                            junk,
+                            ErrorType.INVALID_HEADER_FORMAT,
+                            "Interface.H${i + 1}",
+                            it,
                         )
                     }
                 }
         }
 
-        contentPaddingAddition?.let {
-            if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
-                throw ConfigParseException(
-                    ErrorType.INVALID_RANGE_FORMAT,
-                    "Interface.ContentPaddingAddition",
-                    it,
-                )
-            }
+        listOf(i1 to "I1", i2 to "I2", i3 to "I3", i4 to "I4", i5 to "I5").forEach {
+            (sig, shortName) ->
+            sig?.takeIf { it.isNotBlank() }
+                ?.let { NetworkUtils.validateAmneziaSignaturePacket(it, "Interface.$shortName") }
         }
+
+        headerProtectionKey
+            ?.takeIf { it.isNotBlank() }
+            ?.let { key ->
+                if (!NetworkUtils.isValidBase64(key)) {
+                    throw ConfigParseException(
+                        ErrorType.INVALID_BASE64_KEY,
+                        "Interface.HeaderProtectionKey",
+                        key,
+                    )
+                }
+                listOf(
+                        s1 to "S1",
+                        s2 to "S2",
+                        s3 to "S3",
+                        s4 to "S4",
+                    )
+                    .forEach { (value, name) ->
+                        val junk = value ?: 0
+                        if (junk < 12) {
+                            throw ConfigParseException(
+                                ErrorType.INVALID_HEADER_PROTECTION_PADDING,
+                                "Interface.$name",
+                                junk,
+                            )
+                        }
+                    }
+            }
+
+        contentPaddingAddition
+            ?.takeIf { it.isNotBlank() }
+            ?.let {
+                if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
+                    throw ConfigParseException(
+                        ErrorType.INVALID_RANGE_FORMAT,
+                        "Interface.ContentPaddingAddition",
+                        it,
+                    )
+                }
+            }
+
         listOf(
                 rekeyAfterTime to "RekeyAfterTime",
                 rekeyTimeout to "RekeyTimeout",
@@ -206,47 +215,58 @@ data class InterfaceSection(
                 maxHandshakeAttempts to "MaxHandshakeAttempts",
             )
             .forEach { (value, name) ->
-                value?.let {
-                    if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
-                        throw ConfigParseException(
-                            ErrorType.INVALID_RANGE_FORMAT,
-                            "Interface.$name",
-                            it,
-                        )
+                value
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let {
+                        if (!NetworkUtils.isValidUintRangeOrScalar(it)) {
+                            throw ConfigParseException(
+                                ErrorType.INVALID_RANGE_FORMAT,
+                                "Interface.$name",
+                                it,
+                            )
+                        }
                     }
-                }
             }
 
         address
             ?.split(",")
             ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
             ?.forEach {
-                if (it.isNotBlank() && !NetworkUtils.isValidCidr(it))
+                if (!NetworkUtils.isValidCidr(it))
                     throw ConfigParseException(ErrorType.INVALID_CIDR, "Interface.Address", it)
             }
+
         dns?.split(",")
             ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
             ?.forEach {
-                if (it.isNotBlank() && !NetworkUtils.isValidDnsEntry(it))
+                if (!NetworkUtils.isValidDnsEntry(it))
                     throw ConfigParseException(ErrorType.INVALID_DNS_ENTRY, "Interface.DNS", it)
             }
-        randomTrailers?.let {
-            if (it !in validAmneziaBooleans) {
-                throw ConfigParseException(
-                    ErrorType.INVALID_RANDOM_TRAILER_VALUE,
-                    "Interface.RandomTrailers",
-                    it,
-                )
+
+        randomTrailers
+            ?.takeIf { it.isNotBlank() }
+            ?.let {
+                if (it !in validAmneziaBooleans) {
+                    throw ConfigParseException(
+                        ErrorType.INVALID_RANDOM_TRAILER_VALUE,
+                        "Interface.RandomTrailers",
+                        it,
+                    )
+                }
             }
-        }
-        disableCookies?.let {
-            if (it !in validAmneziaBooleans) {
-                throw ConfigParseException(
-                    ErrorType.INVALID_DISABLE_COOKIES_VALUE,
-                    "Interface.DisableCookies",
-                    it,
-                )
+
+        disableCookies
+            ?.takeIf { it.isNotBlank() }
+            ?.let {
+                if (it !in validAmneziaBooleans) {
+                    throw ConfigParseException(
+                        ErrorType.INVALID_DISABLE_COOKIES_VALUE,
+                        "Interface.DisableCookies",
+                        it,
+                    )
+                }
             }
-        }
     }
 }
