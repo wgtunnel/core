@@ -12,11 +12,14 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 internal object UnderlayDnsBridge {
     private val log = Logger.withTag("UnderlayDnsBridge")
     private val underlayNetworkHandle = AtomicLong(0L)
+    private val vpnNetworkHandle = AtomicLong(0L)
 
     @OptIn(ExperimentalAtomicApi::class)
     private val underlayNetwork = AtomicReference<Network?>(null)
 
     @JvmStatic private external fun setUnderlayNetworkHandleNative(handle: Long)
+
+    @JvmStatic private external fun setVpnNetworkHandleNative(handle: Long)
 
     fun setUnderlayNetwork(network: Network?) {
         underlayNetwork.store(network)
@@ -25,6 +28,15 @@ internal object UnderlayDnsBridge {
         if (previous != handle) {
             setUnderlayNetworkHandleNative(handle)
             log.d { "Underlay network handle $previous to $handle" }
+        }
+    }
+
+    fun setVpnNetwork(network: Network?) {
+        val handle = network?.networkHandle ?: 0L
+        val previous = vpnNetworkHandle.exchange(handle)
+        if (previous != handle) {
+            setVpnNetworkHandleNative(handle)
+            log.d { "VPN network handle $previous to $handle" }
         }
     }
 

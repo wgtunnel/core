@@ -4,6 +4,7 @@ package main
 
 import (
 	_ "github.com/wgtunnel/backend/bootstrap"
+	_ "github.com/wgtunnel/backend/bootstrap/bypass"
 	_ "github.com/wgtunnel/backend/dns/transport/local"
 	_ "github.com/wgtunnel/backend/handle"
 	_ "github.com/wgtunnel/backend/jni"

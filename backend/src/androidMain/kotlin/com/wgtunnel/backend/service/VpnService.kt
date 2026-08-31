@@ -2,6 +2,8 @@ package com.wgtunnel.backend.service
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -12,6 +14,7 @@ import com.wgtunnel.backend.BackendRuntime
 import com.wgtunnel.backend.BypassSocket
 import com.wgtunnel.backend.SocketProtector
 import com.wgtunnel.backend.Tunnel
+import com.wgtunnel.backend.dns.UnderlayDnsBridge
 import com.wgtunnel.backend.model.KillSwitchConfig
 import com.wgtunnel.backend.model.dns.TunnelDnsConfig
 import com.wgtunnel.backend.service.RuntimeManager.Companion.DEFAULT_MTU
@@ -191,6 +194,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         hevBridgeFd = null
         currentKillSwitchConfig = null
         isKillSwitchActive = false
+        if (vpnTunFd == null) UnderlayDnsBridge.setVpnNetwork(null)
     }
 
     fun setKillSwitch(config: KillSwitchConfig?) {
@@ -243,6 +247,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         hevBridgeFd = newFd
         isKillSwitchActive = true
         currentKillSwitchConfig = config
+        seedVpnNetworkHandle()
         rebindHevSocks5Bridge()
     }
 
@@ -334,6 +339,19 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
                     }
                 }
                 .establish()
+        seedVpnNetworkHandle()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun seedVpnNetworkHandle() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val vpn =
+            cm.allNetworks.firstOrNull { network ->
+                val caps = cm.getNetworkCapabilities(network)
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+        UnderlayDnsBridge.setVpnNetwork(vpn)
+        log.d { "Seeded VPN network handle=${vpn?.networkHandle ?: 0L}" }
     }
 
     override fun detachVpnTunnelFd(): Int? {
@@ -347,6 +365,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
             log.e(throwable = e) { "Failed to close VPN fd" }
         }
         vpnTunFd = null
+        if (hevBridgeFd == null) UnderlayDnsBridge.setVpnNetwork(null)
     }
 
     override fun startHevSocks5Bridge(port: Int, password: String) {

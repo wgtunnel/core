@@ -15,6 +15,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
 	"github.com/wgtunnel/backend/bind"
+	"github.com/wgtunnel/backend/bootstrap/bypass"
 	"github.com/wgtunnel/backend/constants"
 	hand "github.com/wgtunnel/backend/handle"
 	"github.com/wgtunnel/backend/ipc"
@@ -96,6 +97,9 @@ func startVpnDevice(
 	}
 
 	tunName, _ := tun.Name()
+	if tunName != "" {
+		bypass.SetTunnelInterfaceIndexFromName(tunName)
+	}
 
 	var uapi net.Listener
 	uapi, err = ipc.SetupIPC(tunName, uapiPath)
@@ -178,6 +182,7 @@ func stopVpn(handle int32) {
 	if tunHandle.device != nil {
 		tunHandle.device.Close()
 	}
+	bypass.SetTunnelInterfaceIndex(0)
 	statusnotify.Clear(handle)
 	OnTunnelStopped(handle)
 	hand.ReleaseHandle(handle)

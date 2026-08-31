@@ -1,11 +1,11 @@
 [versions]
-agp = "9.4.0-rc01"
+agp = "9.4.0-rc02"
 kotlin = "2.4.10"
 android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.4.3"
+lib = "1.4.4"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.11.0"
  # Corutines

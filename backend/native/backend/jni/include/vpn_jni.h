@@ -12,6 +12,7 @@ struct go_string jstring_to_go(JNIEnv *env, jstring s, const char **pinned);
 void release_jstring(JNIEnv *env, jstring s, const char *pinned);
 
 extern void setUnderlayNetworkHandle(int64_t handle);
+extern void setVpnNetworkHandle(int64_t handle);
 
 char *JniLookupOnUnderlayNetwork(struct go_string host,
                                  struct go_string networkFamily);

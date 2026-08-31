@@ -195,3 +195,12 @@ Java_com_wgtunnel_backend_dns_UnderlayDnsBridge_setUnderlayNetworkHandleNative(
     (void)c;
     setUnderlayNetworkHandle((int64_t)handle);
 }
+
+JNIEXPORT void JNICALL
+Java_com_wgtunnel_backend_dns_UnderlayDnsBridge_setVpnNetworkHandleNative(
+        JNIEnv *env, jclass c, jlong handle)
+{
+    (void)env;
+    (void)c;
+    setVpnNetworkHandle((int64_t)handle);
+}

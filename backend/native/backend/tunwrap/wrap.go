@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+	"github.com/wgtunnel/backend/bootstrap/bypass"
 	"github.com/wgtunnel/backend/dns/transport"
 	platform "github.com/wgtunnel/backend/dns/transport/local"
 	"github.com/wgtunnel/backend/tunwrap/dns"
@@ -16,13 +17,13 @@ import (
 // DialContextFunc dials through the tunnel stack (netstack) or the OS.
 type DialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-// MaybeWrapTUN wraps with OS-dialed upstreams
+// MaybeWrapTUN wraps with OS-dialed upstreams bound to the tunnel network
 func MaybeWrapTUN(base tun.Device, dnsConfigJSON string) (tun.Device, error) {
-	return MaybeWrapTUNDial(base, dnsConfigJSON, nil)
+	return MaybeWrapTUNDial(base, dnsConfigJSON, bypass.TunnelDialer().DialContext)
 }
 
 // MaybeWrapTUNDial is MaybeWrapTUN with an optional tunnel dialer so FakeDNS
-// upstream queries go through WG instead of the OS to prevent extra round trip
+// upstream queries go through WG (netstack) or the tunnel-bound OS dialer.
 func MaybeWrapTUNDial(base tun.Device, dnsConfigJSON string, dial DialContextFunc) (tun.Device, error) {
 	if strings.TrimSpace(dnsConfigJSON) == "" {
 		return base, nil

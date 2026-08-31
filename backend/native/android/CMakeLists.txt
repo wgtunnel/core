@@ -78,6 +78,12 @@ add_custom_command(
 		${GO_DIR}/jni/vpn_jni_android.c
 		${GO_DIR}/jni/proxy_jni.c
 		${GO_DIR}/jni/bootstrap_jni.c
+		${GO_DIR}/bootstrap/bypass/handle_android.go
+		${GO_DIR}/bootstrap/bypass/iface.go
+		${GO_DIR}/bootstrap/bypass/tunnel.go
+		${GO_DIR}/bootstrap/bypass/tunnel_android.go
+		${GO_DIR}/tunwrap/wrap.go
+		${GO_DIR}/vpn/vpn_shared.go
 )
 
 add_custom_target(libam-go.so ALL DEPENDS "${AMGO_OUT}")
