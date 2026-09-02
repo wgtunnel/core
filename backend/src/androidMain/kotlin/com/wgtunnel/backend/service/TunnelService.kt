@@ -14,8 +14,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 
 internal class TunnelService : LifecycleService(), TunnelRuntime {
@@ -65,17 +70,23 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
     @OptIn(FlowPreview::class)
     private fun observeProxyPersistentNotification() {
         lifecycleScope.launch {
-            backend.status
-                .distinctUntilChangedBy { it.toNotificationComparisonKey() }
-                .debounce(700.milliseconds)
-                .collect { status ->
-                    val notification = provider.buildProxyPersistentNotification(status)
-                    notificationManager.notify(
-                        provider.proxyNotificationId,
-                        notification,
-                    )
-                    backend.applicationProvider.refreshStatusUi()
-                }
+            val statusFlow =
+                combine(
+                        backend.status,
+                        provider.persistentNotificationSignals.onStart { emit(Unit) },
+                    ) { status, _ ->
+                        status
+                    }
+                    .distinctUntilChangedBy { provider.persistentNotificationKey(it) }
+            merge(statusFlow.take(1), statusFlow.drop(1).debounce(700.milliseconds)).collect {
+                status ->
+                val notification = provider.buildProxyPersistentNotification(status)
+                notificationManager.notify(
+                    provider.proxyNotificationId,
+                    notification,
+                )
+                backend.applicationProvider.refreshStatusUi()
+            }
         }
     }
 

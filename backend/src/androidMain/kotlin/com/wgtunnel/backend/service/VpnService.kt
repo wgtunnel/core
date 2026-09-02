@@ -56,6 +56,8 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
     @Volatile var isKillSwitchActive = false
 
+    @Volatile private var userActivatedShutdown = false
+
     override fun onCreate() {
         serviceManager.set(this)
         super.onCreate()
@@ -91,6 +93,9 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (userActivatedShutdown) {
+            return START_NOT_STICKY
+        }
         serviceManager.set(this)
 
         serviceScope.launch { serviceManager.getCompanionService() }
@@ -121,6 +126,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     }
 
     fun shutdown() {
+        userActivatedShutdown = true
         // have to close fds before we can trigger service shutdown
         closeVpnTunnelFd()
         disableKillSwitch()

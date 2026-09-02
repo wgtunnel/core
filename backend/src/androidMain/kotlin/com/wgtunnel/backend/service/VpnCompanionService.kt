@@ -11,8 +11,13 @@ import com.wgtunnel.backend.AndroidApplicationProvider
 import com.wgtunnel.backend.BackendRuntime
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 
 internal class VpnCompanionService : LifecycleService() {
@@ -32,7 +37,10 @@ internal class VpnCompanionService : LifecycleService() {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     }
 
+    @Volatile private var userActivatedShutdown = false
+
     fun shutdown() {
+        userActivatedShutdown = true
         stopSelf()
     }
 
@@ -48,6 +56,10 @@ internal class VpnCompanionService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (userActivatedShutdown) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         launchForegroundNotification()
         serviceManager.set(this)
         val isSystemRestart =
@@ -75,18 +87,23 @@ internal class VpnCompanionService : LifecycleService() {
     @OptIn(FlowPreview::class)
     private fun observeVpnPersistentNotification() {
         lifecycleScope.launch {
-            backend.status
-                .distinctUntilChangedBy { it.toNotificationComparisonKey() }
-                .debounce(700.milliseconds)
-                .collect { status ->
-                    val notification = provider.buildVpnPersistentNotification(status)
-                    notificationManager.notify(
-                        provider.vpnNotificationId,
-                        notification,
-                    )
-                    // refresh tile
-                    backend.applicationProvider.refreshStatusUi()
-                }
+            val statusFlow =
+                combine(
+                        backend.status,
+                        provider.persistentNotificationSignals.onStart { emit(Unit) },
+                    ) { status, _ ->
+                        status
+                    }
+                    .distinctUntilChangedBy { provider.persistentNotificationKey(it) }
+            merge(statusFlow.take(1), statusFlow.drop(1).debounce(700.milliseconds)).collect {
+                status ->
+                val notification = provider.buildVpnPersistentNotification(status)
+                notificationManager.notify(
+                    provider.vpnNotificationId,
+                    notification,
+                )
+                backend.applicationProvider.refreshStatusUi()
+            }
         }
     }
 
@@ -97,6 +114,7 @@ internal class VpnCompanionService : LifecycleService() {
 
     override fun onDestroy() {
         log.d("CompanionService destroyed")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         serviceManager.clearCompanionService()
         backend.applicationProvider.refreshStatusUi()
         super.onDestroy()
