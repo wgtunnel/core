@@ -1,5 +1,6 @@
 package com.wgtunnel.backend.network
 
+import co.touchlab.kermit.Logger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,14 +30,25 @@ data class NetworkInfoDto(
 }
 
 object NetworkMonitorBridge {
+    private val log = Logger.withTag("NetworkMonitor")
     private val json = Json { ignoreUnknownKeys = true }
     private val _info = MutableStateFlow(NetworkInfoDto())
     val info: StateFlow<NetworkInfoDto> = _info.asStateFlow()
 
     fun onNativeInfo(raw: String) {
-        _info.value =
-            runCatching { json.decodeFromString<NetworkInfoDto>(raw) }
-                .getOrElse { NetworkInfoDto() }
+        val parsed = runCatching {
+            json.decodeFromString<NetworkInfoDto>(raw)
+        }
+            .onFailure { log.w(it) { "Failed to parse native network info: $raw" } }
+            .getOrElse {
+                return
+            }
+        if (_info.value != parsed) {
+            log.d {
+                "Network ${parsed.type} iface=${parsed.interfaceName} ssid=${parsed.ssid} bssid=${parsed.bssid}"
+            }
+        }
+        _info.value = parsed
     }
 
     fun start(): Boolean = NetworkMonitorNative.start() >= 0

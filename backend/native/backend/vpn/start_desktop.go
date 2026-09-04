@@ -153,9 +153,7 @@ func destroyInterface(ifName string) {
 		if p.tun != nil {
 			_ = p.tun.Close()
 		}
-	} else {
-		// Pending missed. JNI key was not cloned, takePending already consumed
-		// it, or a previous process crashed. Still drop leftover ip/nftables.
+	} else if desktopIfaceExists(ifName) {
 		cleanupOrphanedDesktopIface(ifName)
 	}
 	// Always drop a leftover kernel iface, even if we no longer hold pending

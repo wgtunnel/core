@@ -179,12 +179,13 @@ func stopVpn(handle int32) {
 	if tunHandle.uapi != nil {
 		tunHandle.uapi.Close()
 	}
+	// Router/DNS cleanup needs the TUN iface to still exist.
+	OnTunnelStopped(handle)
 	if tunHandle.device != nil {
 		tunHandle.device.Close()
 	}
 	bypass.SetTunnelInterfaceIndex(0)
 	statusnotify.Clear(handle)
-	OnTunnelStopped(handle)
 	hand.ReleaseHandle(handle)
 	// Terminal stop: one-shot notify (Kotlin acks Down when applied).
 	statusnotify.NotifyOnce(handle, int32(constants.StatusStop))

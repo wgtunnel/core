@@ -28,16 +28,24 @@ import (
 )
 
 const (
-	baseChainInput       = "INPUT"
-	baseChainOutput      = "OUTPUT"
-	baseChainPostrouting = "POSTROUTING"
-	baseChainForward     = "FORWARD"
-	chainNameForward     = "wgtunnel-forward"
-	chainNameInput       = "wgtunnel-input"
-	chainNamePostrouting = "wgtunnel-postrouting"
-	chainNameOutput      = "wgtunnel-output"
-	chainTypeRegular     = ""
-	tag                  = "LinuxFirewall"
+	tableName = "wgtunnel"
+
+	// Hook chains in our private table
+	chainNameInput  = "input"
+	chainNameOutput = "output"
+
+	legacyTableFilter = "filter"
+	legacyTableNat    = "nat"
+	legacyChainInput  = "INPUT"
+	legacyChainOutput = "OUTPUT"
+	legacyChainForward = "FORWARD"
+	legacyChainPostrouting = "POSTROUTING"
+	legacyJumpInput   = "wgtunnel-input"
+	legacyJumpOutput  = "wgtunnel-output"
+	legacyJumpForward = "wgtunnel-forward"
+	legacyJumpPostrouting = "wgtunnel-postrouting"
+
+	tag = "LinuxFirewall"
 )
 
 type LinuxFirewall struct {
@@ -233,37 +241,21 @@ func (f *LinuxFirewall) Disable() error {
 		return nil
 	}
 
-	// remove hooks
-	if err := f.deleteCustomHooks(); err != nil {
-		log.Error(tag, "del hooks: %v", err)
-	}
-
-	// flush base rules
-	if err := f.flushCustomChains(); err != nil {
-		log.Error(tag, "del base: %v", err)
-	}
-
-	// delete chains
-	if err := f.deleteCustomChains(); err != nil {
-		log.Error(tag, "del chains: %v", err)
-	}
-
-	// delete tables
 	for _, family := range []nftables.TableFamily{nftables.TableFamilyIPv4, nftables.TableFamilyIPv6} {
-		if err := deleteTableIfExists(f.conn, family, "filter"); err != nil {
-			log.Error(tag, "delete filter table (%v): %v", family, err)
-		}
-		if err := deleteTableIfExists(f.conn, family, "nat"); err != nil {
-			log.Error(tag, "delete nat table (%v): %v", family, err)
+		if err := deleteTableIfExists(f.conn, family, tableName); err != nil {
+			log.Error(tag, "delete %s table (%v): %v", tableName, family, err)
 		}
 	}
-
-	if err := f.conn.Flush(); err != nil {
-		return fmt.Errorf("final flush: %w", err)
+	if err := f.cleanupLegacySharedTables(); err != nil {
+		log.Error(tag, "cleanup legacy filter/nat jumps: %v", err)
 	}
 
 	f.localAddrRules = nil
 	f.tunnelRules = make(map[string][]*nftables.Rule)
+	f.nft4.Filter, f.nft4.Nat = nil, nil
+	if f.nft6 != nil {
+		f.nft6.Filter, f.nft6.Nat = nil, nil
+	}
 
 	f.killSwitchEnabled.Store(false)
 
@@ -615,51 +607,32 @@ func (f *LinuxFirewall) Enable() error {
 		return nil
 	}
 
+	if err := f.cleanupLegacySharedTables(); err != nil {
+		log.Error(tag, "cleanup legacy filter/nat jumps: %v", err)
+	}
+
 	polAccept := nftables.ChainPolicyAccept
 	for _, table := range f.getTables() {
-		// Create filter table
-		filter, err := createTableIfNotExist(f.conn, table.Proto, "filter")
+		t, err := createTableIfNotExist(f.conn, table.Proto, tableName)
 		if err != nil {
-			return fmt.Errorf("create filter table: %w", err)
+			return fmt.Errorf("create %s table: %w", tableName, err)
 		}
-		table.Filter = filter
+		table.Filter = t
+		table.Nat = nil
 
-		_, err = getOrCreateChain(f.conn, chainInfo{filter, baseChainForward, nftables.ChainTypeFilter, nftables.ChainHookForward, nftables.ChainPriorityFilter, &polAccept})
+		_, err = getOrCreateChain(f.conn, chainInfo{
+			t, chainNameInput, nftables.ChainTypeFilter,
+			nftables.ChainHookInput, nftables.ChainPriorityFilter, &polAccept,
+		})
 		if err != nil {
-			return fmt.Errorf("create FORWARD chain: %w", err)
+			return fmt.Errorf("create input chain: %w", err)
 		}
-		_, err = getOrCreateChain(f.conn, chainInfo{filter, baseChainInput, nftables.ChainTypeFilter, nftables.ChainHookInput, nftables.ChainPriorityFilter, &polAccept})
+		_, err = getOrCreateChain(f.conn, chainInfo{
+			t, chainNameOutput, nftables.ChainTypeFilter,
+			nftables.ChainHookOutput, nftables.ChainPriorityFilter, &polAccept,
+		})
 		if err != nil {
-			return fmt.Errorf("create INPUT chain: %w", err)
-		}
-		_, err = getOrCreateChain(f.conn, chainInfo{filter, baseChainOutput, nftables.ChainTypeFilter, nftables.ChainHookOutput, nftables.ChainPriorityFilter, &polAccept})
-		if err != nil {
-			return fmt.Errorf("create OUTPUT chain: %w", err)
-		}
-
-		// Custom chains (regular, jumped to from conventional)
-		if err = createChainIfNotExist(f.conn, chainInfo{filter, chainNameForward, chainTypeRegular, nil, nil, nil}); err != nil {
-			return fmt.Errorf("create wgtunnel-forward chain: %w", err)
-		}
-		if err = createChainIfNotExist(f.conn, chainInfo{filter, chainNameInput, chainTypeRegular, nil, nil, nil}); err != nil {
-			return fmt.Errorf("create wgtunnel-input chain: %w", err)
-		}
-		if err = createChainIfNotExist(f.conn, chainInfo{filter, chainNameOutput, chainTypeRegular, nil, nil, nil}); err != nil {
-			return fmt.Errorf("create wgtunnel-output chain: %w", err)
-		}
-
-		nat, err := createTableIfNotExist(f.conn, table.Proto, "nat")
-		if err != nil {
-			return fmt.Errorf("create nat table: %w", err)
-		}
-		table.Nat = nat
-
-		_, err = getOrCreateChain(f.conn, chainInfo{nat, baseChainPostrouting, nftables.ChainTypeNAT, nftables.ChainHookPostrouting, nftables.ChainPriorityNATSource, &polAccept})
-		if err != nil {
-			return fmt.Errorf("create POSTROUTING chain: %w", err)
-		}
-		if err = createChainIfNotExist(f.conn, chainInfo{nat, chainNamePostrouting, chainTypeRegular, nil, nil, nil}); err != nil {
-			return fmt.Errorf("create wgtunnel-postrouting chain: %w", err)
+			return fmt.Errorf("create output chain: %w", err)
 		}
 	}
 
@@ -667,55 +640,11 @@ func (f *LinuxFirewall) Enable() error {
 		return fmt.Errorf("flush after chain creation: %w", err)
 	}
 
-	if err := f.addHooks(); err != nil {
-		return fmt.Errorf("add hooks: %w", err)
-	}
-
 	if err := f.addKillSwitchRules(); err != nil {
 		return fmt.Errorf("add kill switch rules: %w", err)
 	}
 
 	f.killSwitchEnabled.Store(true)
-	return nil
-}
-
-// addHooks adds jump rules from conventional chains to custom ones.
-func (f *LinuxFirewall) addHooks() error {
-	conn := f.conn
-
-	for _, table := range f.getTables() {
-		inputChain, err := getChainFromTable(conn, table.Filter, baseChainInput)
-		if err != nil {
-			return fmt.Errorf("get INPUT chain: %w", err)
-		}
-		if err = addHookRule(conn, table.Filter, inputChain, chainNameInput); err != nil {
-			return fmt.Errorf("add INPUT hook: %w", err)
-		}
-
-		forwardChain, err := getChainFromTable(conn, table.Filter, baseChainForward)
-		if err != nil {
-			return fmt.Errorf("get FORWARD chain: %w", err)
-		}
-		if err = addHookRule(conn, table.Filter, forwardChain, chainNameForward); err != nil {
-			return fmt.Errorf("add FORWARD hook: %w", err)
-		}
-
-		outputChain, err := getChainFromTable(conn, table.Filter, baseChainOutput)
-		if err != nil {
-			return fmt.Errorf("get OUTPUT chain: %w", err)
-		}
-		if err = addHookRule(conn, table.Filter, outputChain, chainNameOutput); err != nil {
-			return fmt.Errorf("add OUTPUT hook: %w", err)
-		}
-
-		postroutingChain, err := getChainFromTable(conn, table.Nat, baseChainPostrouting)
-		if err != nil {
-			return fmt.Errorf("get POSTROUTING chain: %w", err)
-		}
-		if err = addHookRule(conn, table.Nat, postroutingChain, chainNamePostrouting); err != nil {
-			return fmt.Errorf("add POSTROUTING hook: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -732,13 +661,6 @@ func createHookRule(table *nftables.Table, fromChain *nftables.Chain, toChainNam
 			},
 		},
 	}
-}
-
-// addHookRule inserts a jump rule at the top.
-func addHookRule(conn *nftables.Conn, table *nftables.Table, fromChain *nftables.Chain, toChainName string) error {
-	rule := createHookRule(table, fromChain, toChainName)
-	conn.InsertRule(rule)
-	return conn.Flush()
 }
 
 // addKillSwitchRules adds bypass for fwmark and DROP at end (private helper).
@@ -762,6 +684,10 @@ func (f *LinuxFirewall) addKillSwitchRules() error {
 			return err
 		}
 
+		if err := f.addVirtIfaceAccept(table.Filter, inputChain); err != nil {
+			return err
+		}
+
 		// drop everything else
 		dropRule := createDropRule(table.Filter, inputChain)
 		f.conn.AddRule(dropRule)
@@ -780,17 +706,12 @@ func (f *LinuxFirewall) addKillSwitchRules() error {
 		bypassRule := createFwmarkRule(table.Filter, outputChain, mark.LinuxBypassMarkNum)
 		f.conn.InsertRule(bypassRule)
 
-		// drop everything else
-		dropRule = createDropRule(table.Filter, outputChain)
-		f.conn.AddRule(dropRule)
-
-		forwardChain, err := getChainFromTable(f.conn, table.Filter, chainNameForward)
-		if err != nil {
-			return fmt.Errorf("get forward chain: %w", err)
+		if err := f.addVirtIfaceAccept(table.Filter, outputChain); err != nil {
+			return err
 		}
 
-		// drop all forwarded traffic
-		dropRule = createDropRule(table.Filter, forwardChain)
+		// drop everything else
+		dropRule = createDropRule(table.Filter, outputChain)
 		f.conn.AddRule(dropRule)
 	}
 
@@ -807,6 +728,28 @@ func (f *LinuxFirewall) addTunnelInterfaceRule(iface string, table *nftables.Tab
 	existing, _ := findRule(f.conn, tunnelBypassRule)
 	if existing == nil {
 		f.conn.InsertRule(tunnelBypassRule)
+	}
+	return nil
+}
+
+func (f *LinuxFirewall) addVirtIfaceAccept(table *nftables.Table, chain *nftables.Chain) error {
+	key := getIfKeyForChain(chain)
+	for _, pfx := range []string{"docker", "virbr", "veth", "br-", "lxc", "cni-", "podman", "flannel"} {
+		rule := &nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: key, Register: 1},
+				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte(pfx),
+				},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		}
+		f.conn.InsertRule(rule)
 	}
 	return nil
 }
@@ -871,33 +814,6 @@ func (f *LinuxFirewall) addEstablishedRule(table *nftables.Table, chain *nftable
 	}
 
 	f.conn.InsertRule(rule)
-	return nil
-}
-
-// delKillSwitchRules removes kill switch by flushing chains
-func (f *LinuxFirewall) delKillSwitchRules() error {
-	log.Debug(tag, "Removing kill switch rules...")
-
-	for _, table := range f.getTables() {
-		if outputChain, err := getChainFromTable(f.conn, table.Filter, chainNameOutput); err == nil {
-			f.conn.FlushChain(outputChain)
-		}
-
-		if inputChain, err := getChainFromTable(f.conn, table.Filter, chainNameInput); err == nil {
-			f.conn.FlushChain(inputChain)
-		}
-
-		if forwardChain, err := getChainFromTable(f.conn, table.Filter, chainNameForward); err == nil {
-			f.conn.FlushChain(forwardChain)
-		}
-	}
-
-	if err := f.conn.Flush(); err != nil {
-		return fmt.Errorf("flush after deleting kill switch: %w", err)
-	}
-
-	log.Debug(tag, "Kill switch rules removed.")
-
 	return nil
 }
 
@@ -1038,37 +954,41 @@ func maskOf(pfx netip.Prefix) []byte {
 	return mask
 }
 
-// deleteCustomHooks removes jump rules from base to custom chains
-func (f *LinuxFirewall) deleteCustomHooks() error {
-	conn := f.conn
-	for _, table := range f.getTables() {
-		if table == nil || table.Filter == nil {
-			continue // skip if table or filter not initialized
+// cleanupLegacySharedTables removes jumps/chains we used to install in the
+// shared iptables-nft filter/nat tables. Never delete those tables.
+func (f *LinuxFirewall) cleanupLegacySharedTables() error {
+	families := []nftables.TableFamily{nftables.TableFamilyIPv4, nftables.TableFamilyIPv6}
+	for _, family := range families {
+		filter, err := getTableIfExists(f.conn, family, legacyTableFilter)
+		if err != nil {
+			return err
 		}
-		inputChain, err := getChainFromTable(conn, table.Filter, baseChainInput)
-		if err == nil && inputChain != nil {
-			deleteHookRule(conn, table.Filter, inputChain, chainNameInput)
+		if filter != nil {
+			f.removeLegacyJump(filter, legacyChainInput, legacyJumpInput)
+			f.removeLegacyJump(filter, legacyChainOutput, legacyJumpOutput)
+			f.removeLegacyJump(filter, legacyChainForward, legacyJumpForward)
+			_ = deleteChainIfExists(f.conn, filter, legacyJumpInput)
+			_ = deleteChainIfExists(f.conn, filter, legacyJumpOutput)
+			_ = deleteChainIfExists(f.conn, filter, legacyJumpForward)
 		}
-
-		forwardChain, err := getChainFromTable(conn, table.Filter, baseChainForward)
-		if err == nil && forwardChain != nil {
-			deleteHookRule(conn, table.Filter, forwardChain, chainNameForward)
+		nat, err := getTableIfExists(f.conn, family, legacyTableNat)
+		if err != nil {
+			return err
 		}
-
-		outputChain, err := getChainFromTable(conn, table.Filter, baseChainOutput)
-		if err == nil && outputChain != nil {
-			deleteHookRule(conn, table.Filter, outputChain, chainNameOutput)
-		}
-
-		if table.Nat == nil {
-			continue
-		}
-		postroutingChain, err := getChainFromTable(conn, table.Nat, baseChainPostrouting)
-		if err == nil && postroutingChain != nil {
-			deleteHookRule(conn, table.Nat, postroutingChain, chainNamePostrouting)
+		if nat != nil {
+			f.removeLegacyJump(nat, legacyChainPostrouting, legacyJumpPostrouting)
+			_ = deleteChainIfExists(f.conn, nat, legacyJumpPostrouting)
 		}
 	}
-	return conn.Flush()
+	return f.conn.Flush()
+}
+
+func (f *LinuxFirewall) removeLegacyJump(table *nftables.Table, fromChain, toChain string) {
+	chain, err := getChainFromTable(f.conn, table, fromChain)
+	if err != nil || chain == nil {
+		return
+	}
+	_ = deleteHookRule(f.conn, table, chain, toChain)
 }
 
 // deleteHookRule deletes a specific jump rule if it exists
@@ -1080,41 +1000,4 @@ func deleteHookRule(conn *nftables.Conn, table *nftables.Table, fromChain *nftab
 	}
 	conn.DelRule(existing)
 	return nil
-}
-
-// deleteCustomChains deletes custom chains
-func (f *LinuxFirewall) deleteCustomChains() error {
-	for _, table := range f.getTables() {
-		deleteChainIfExists(f.conn, table.Filter, chainNameForward)
-		deleteChainIfExists(f.conn, table.Filter, chainNameInput)
-		deleteChainIfExists(f.conn, table.Filter, chainNameOutput)
-		deleteChainIfExists(f.conn, table.Nat, chainNamePostrouting)
-	}
-	return f.conn.Flush()
-}
-
-// flushCustomChains flushes rules from custom chains
-func (f *LinuxFirewall) flushCustomChains() error {
-	for _, table := range f.getTables() {
-		inputChain, err := getChainFromTable(f.conn, table.Filter, chainNameInput)
-		if err == nil {
-			f.conn.FlushChain(inputChain)
-		}
-
-		forwardChain, err := getChainFromTable(f.conn, table.Filter, chainNameForward)
-		if err == nil {
-			f.conn.FlushChain(forwardChain)
-		}
-
-		outputChain, err := getChainFromTable(f.conn, table.Filter, chainNameOutput)
-		if err == nil {
-			f.conn.FlushChain(outputChain)
-		}
-
-		postrouteChain, err := getChainFromTable(f.conn, table.Nat, chainNamePostrouting)
-		if err == nil {
-			f.conn.FlushChain(postrouteChain)
-		}
-	}
-	return f.conn.Flush()
 }

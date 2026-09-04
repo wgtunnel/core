@@ -5,8 +5,5 @@ actual data class NetworkSnapshot(
     actual val hasIpv6: Boolean,
     actual val isUsable: Boolean,
 ) {
-    // TODO
-    actual fun hasNetwork(): Boolean {
-        return true
-    }
+    actual fun hasNetwork(): Boolean = isUsable
 }

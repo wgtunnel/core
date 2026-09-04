@@ -16,6 +16,7 @@ dependencies {
     implementation(libs.human.readable)
     implementation(libs.kotlinx.datetime)
     implementation(libs.commons.validator)
+    implementation(libs.ipaddress)
 }
 
 tasks.test { useJUnitPlatform() }

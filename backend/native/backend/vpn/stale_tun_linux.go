@@ -9,6 +9,11 @@ import (
 	"github.com/wgtunnel/backend/vpn/router/osrouter"
 )
 
+func desktopIfaceExists(ifName string) bool {
+	_, err := netlink.LinkByName(ifName)
+	return err == nil
+}
+
 // removeStaleTun deletes a leftover kernel TUN by name
 func removeStaleTun(ifName string) {
 	link, err := netlink.LinkByName(ifName)

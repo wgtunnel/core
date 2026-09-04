@@ -14,25 +14,13 @@ PATCHED_GO := GOTOOLCHAIN=local GOROOT="$(GO_DIR)" PATH="$(GO_DIR)/bin:$(PATH)"
 export CGO_ENABLED := 1
 export GOCACHE ?= $(BUILDDIR)/go-cache
 
-# Project JNI headers (vpn_jni.h)
-JNI_INCLUDES := -I$(CURDIR)/jni/include
-
-# JDK JNI headers
-JAVA_HOME ?= $(shell dirname $$(dirname $$(readlink -f $$(which java))))
-ifeq ($(HOST_OS),darwin)
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/darwin
-else ifeq ($(HOST_OS),linux)
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/linux
-else
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/win32
-endif
-
-# Desktop cgo flags
-DESKTOP_CGO_CFLAGS := $(JDK_JNI_CFLAGS) $(JNI_INCLUDES)
-
 HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOST_ARCH := $(shell uname -m)
 
+# Project JNI headers (vpn_jni.h)
+JNI_INCLUDES := -I$(CURDIR)/jni/include
+
+# JDK JNI headers. Gradle passes JAVA_HOME from the compile toolchain.
 JAVA_HOME ?= $(shell dirname $$(dirname $$(readlink -f $$(which java))))
 
 ifeq ($(HOST_OS),darwin)
@@ -43,7 +31,6 @@ else
   JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/win32
 endif
 
-JNI_INCLUDES := -I$(CURDIR)/jni/include
 DESKTOP_CGO_CFLAGS := $(JDK_JNI_CFLAGS) $(JNI_INCLUDES)
 
 NDK_GO_ARCH_MAP_x86 := 386

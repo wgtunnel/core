@@ -24,3 +24,4 @@ jclass vpn_jni_dns_resolver_class(void);
 int vpn_jni_shared_onload(JNIEnv *env);
 void vpn_jni_android_onload(JNIEnv *env);
 void vpn_jni_desktop_onload(JNIEnv *env);
+void network_monitor_jni_onload(JNIEnv *env);

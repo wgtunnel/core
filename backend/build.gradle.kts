@@ -1,3 +1,7 @@
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.jvm.toolchain.JavaToolchainService
+import org.gradle.kotlin.dsl.getByType
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
@@ -121,6 +125,14 @@ mavenPublishing {
 val goDir = layout.projectDirectory.dir("native/backend")
 val jvmNativeResources = layout.projectDirectory.dir("src/jvmMain/resources/natives")
 
+val jdkHome =
+    extensions
+        .getByType<JavaToolchainService>()
+        .launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(libs.versions.jvm.get().toInt()))
+        }
+        .map { it.metadata.installationPath.asFile.absolutePath }
+
 val buildDesktopNatives = tasks.register<Exec>("buildDesktopNatives") {
     group = "build"
     description = "Build desktop JNI shared libraries into jvmMain/resources"
@@ -135,12 +147,8 @@ val buildDesktopNatives = tasks.register<Exec>("buildDesktopNatives") {
 
     outputs.dir(jvmNativeResources)
 
-    val javaHome = providers.environmentVariable("JAVA_HOME")
-        .orElse(providers.systemProperty("java.home"))
-        .get()
-
     environment(
-        "JAVA_HOME" to javaHome,
+        "JAVA_HOME" to jdkHome.get(),
         "RESOURCEDIR" to jvmNativeResources.asFile.absolutePath,
         "DESTDIR" to goDir.dir("out").asFile.absolutePath,
     )

@@ -10,7 +10,7 @@ extern void destroyInterface(struct go_string ifname);
 void
 vpn_jni_desktop_onload(JNIEnv *env)
 {
-    (void)env;
+    network_monitor_jni_onload(env);
 }
 
 JNIEXPORT jint JNICALL

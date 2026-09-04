@@ -148,20 +148,102 @@ func isTunnelIface(name string) bool {
 		strings.HasPrefix(name, "wg")
 }
 
+func isDefaultDst(dst *net.IPNet, family int) bool {
+	if dst == nil {
+		return true
+	}
+	if family == netlink.FAMILY_V4 {
+		return dst.IP.Equal(net.IPv4zero)
+	}
+	return dst.IP.IsUnspecified()
+}
+
 func underlayFromDefaultRoute(ctx context.Context, wifiClient *wifi.Client) (NetworkInfo, error) {
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
-	if err != nil {
-		return NetworkInfo{}, fmt.Errorf("route list: %w", err)
+	if info, err := kernelChosenUnderlay(ctx, wifiClient, netlink.FAMILY_V4); err == nil {
+		return info, nil
+	} else if errors.Is(err, errPhysicalDefaultHidden) {
+		return NetworkInfo{}, err
+	}
+	if info, err := kernelChosenUnderlay(ctx, wifiClient, netlink.FAMILY_V6); err == nil {
+		return info, nil
+	} else if errors.Is(err, errPhysicalDefaultHidden) {
+		return NetworkInfo{}, err
 	}
 
-	var mainPhysical, anyPhysical *netlink.Route
+	info, err := defaultRouteUnderlay(ctx, wifiClient, netlink.FAMILY_V4)
+	if err == nil && info.Type != NetworkDisconnected {
+		return info, nil
+	}
+	v6, v6err := defaultRouteUnderlay(ctx, wifiClient, netlink.FAMILY_V6)
+	if v6err == nil && v6.Type != NetworkDisconnected {
+		return v6, nil
+	}
+	if errors.Is(err, errPhysicalDefaultHidden) || errors.Is(v6err, errPhysicalDefaultHidden) {
+		return NetworkInfo{}, errPhysicalDefaultHidden
+	}
+	if err != nil {
+		return NetworkInfo{}, err
+	}
+	return info, nil
+}
+
+func kernelChosenUnderlay(
+	ctx context.Context,
+	wifiClient *wifi.Client,
+	family int,
+) (NetworkInfo, error) {
+	var dst net.IP
+	if family == netlink.FAMILY_V4 {
+		dst = net.IPv4(1, 1, 1, 1)
+	} else {
+		dst = net.ParseIP("2606:4700:4700::1111")
+	}
+	routes, err := netlink.RouteGet(dst)
+	if err != nil || len(routes) == 0 {
+		if err == nil {
+			err = fmt.Errorf("no route")
+		}
+		return NetworkInfo{}, err
+	}
+	index := routes[0].LinkIndex
+	if index == 0 {
+		return NetworkInfo{}, fmt.Errorf("no oif")
+	}
+	link, err := netlink.LinkByIndex(index)
+	if err != nil {
+		return NetworkInfo{}, err
+	}
+	name := link.Attrs().Name
+	if isTunnelIface(name) {
+		return NetworkInfo{}, errPhysicalDefaultHidden
+	}
+	log.Debug(tag, "kernel underlay family=%d iface=%s ifIndex=%d metric=%d", family, name, index, routes[0].Priority)
+	return networkInfoFromLinkIndex(ctx, wifiClient, index)
+}
+
+type defaultRouteCandidate struct {
+	route netlink.Route
+	name  string
+	main  bool
+}
+
+func defaultRouteUnderlay(ctx context.Context, wifiClient *wifi.Client, family int) (NetworkInfo, error) {
+	routes, err := netlink.RouteListFiltered(family, &netlink.Route{}, 0)
+	if err != nil {
+		routes, err = netlink.RouteList(nil, family)
+		if err != nil {
+			return NetworkInfo{}, fmt.Errorf("route list: %w", err)
+		}
+	}
+
+	var candidates []defaultRouteCandidate
 	sawTunDefault := false
 	for i := range routes {
-		r := &routes[i]
-		if r.Dst != nil && !r.Dst.IP.Equal(net.IPv4zero) {
+		r := routes[i]
+		if r.LinkIndex == 0 || !isDefaultDst(r.Dst, family) {
 			continue
 		}
-		if r.LinkIndex == 0 {
+		if r.Type != 0 && r.Type != unix.RTN_UNICAST {
 			continue
 		}
 		link, err := netlink.LinkByIndex(r.LinkIndex)
@@ -173,27 +255,106 @@ func underlayFromDefaultRoute(ctx context.Context, wifiClient *wifi.Client) (Net
 			sawTunDefault = true
 			continue
 		}
-		if anyPhysical == nil {
-			anyPhysical = r
-		}
-		if r.Table == unix.RT_TABLE_MAIN || r.Table == 0 {
-			mainPhysical = r
-			break
-		}
+		candidates = append(
+			candidates,
+			defaultRouteCandidate{
+				route: r,
+				name:  name,
+				main:  r.Table == unix.RT_TABLE_MAIN || r.Table == 0,
+			},
+		)
 	}
 
-	chosen := mainPhysical
-	if chosen == nil {
-		chosen = anyPhysical
-	}
-	if chosen == nil {
+	if len(candidates) == 0 {
 		if sawTunDefault {
 			return NetworkInfo{}, errPhysicalDefaultHidden
 		}
 		return NetworkInfo{Type: NetworkDisconnected}, nil
 	}
 
-	return networkInfoFromLinkIndex(ctx, wifiClient, chosen.LinkIndex)
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if betterDefaultRoute(c, best) {
+			best = c
+		}
+	}
+	log.Debug(
+		tag,
+		"listed underlay family=%d iface=%s ifIndex=%d metric=%d table=%d candidates=%d",
+		family,
+		best.name,
+		best.route.LinkIndex,
+		best.route.Priority,
+		best.route.Table,
+		len(candidates),
+	)
+	return networkInfoFromLinkIndex(ctx, wifiClient, best.route.LinkIndex)
+}
+
+func betterDefaultRoute(a, b defaultRouteCandidate) bool {
+	if a.route.Priority != b.route.Priority {
+		return a.route.Priority < b.route.Priority
+	}
+	if a.main != b.main {
+		return a.main
+	}
+	return preferLinkIndex(a.route.LinkIndex, b.route.LinkIndex)
+}
+
+func preferLinkIndex(a, b int) bool {
+	la, aerr := netlink.LinkByIndex(a)
+	lb, berr := netlink.LinkByIndex(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return linkPreference(la) > linkPreference(lb)
+}
+
+func linkPreference(link netlink.Link) int {
+	name := link.Attrs().Name
+	switch {
+	case strings.HasPrefix(name, "eth"), strings.HasPrefix(name, "en"):
+		return 3
+	case isWifiName(name):
+		return 2
+	default:
+		return 1
+	}
+}
+
+func bestPhysicalUnderlay(ctx context.Context, wifiClient *wifi.Client, prev NetworkInfo) (NetworkInfo, error) {
+	if prev.HasUsableUnderlay() {
+		refreshed, err := networkInfoFromLinkIndex(ctx, wifiClient, int(prev.IfIndex))
+		if err == nil && (refreshed.HasIPv4 || refreshed.HasIPv6) {
+			if link, lerr := netlink.LinkByIndex(int(prev.IfIndex)); lerr == nil {
+				if link.Attrs().Flags&net.FlagUp != 0 {
+					return refreshed, nil
+				}
+			}
+		}
+	}
+
+	links, err := netlink.LinkList()
+	if err != nil {
+		return NetworkInfo{Type: NetworkDisconnected}, err
+	}
+
+	for _, link := range links {
+		attrs := link.Attrs()
+		if attrs.Flags&net.FlagUp == 0 {
+			continue
+		}
+		name := attrs.Name
+		if name == "lo" || isTunnelIface(name) {
+			continue
+		}
+		info, ierr := networkInfoFromLinkIndex(ctx, wifiClient, attrs.Index)
+		if ierr != nil || (!info.HasIPv4 && !info.HasIPv6) {
+			continue
+		}
+		return info, nil
+	}
+	return NetworkInfo{Type: NetworkDisconnected}, nil
 }
 
 func networkInfoFromLinkIndex(ctx context.Context, client *wifi.Client, ifIndex int) (NetworkInfo, error) {
@@ -281,28 +442,24 @@ func (m *linuxMonitor) refresh() {
 	if err := m.ctx.Err(); err != nil {
 		return
 	}
+	m.mu.RLock()
+	prev := m.current
+	m.mu.RUnlock()
+
 	info, err := underlayFromDefaultRoute(m.ctx, m.wifiClient)
 	if errors.Is(err, errPhysicalDefaultHidden) {
-		m.mu.RLock()
-		prev := m.current
-		m.mu.RUnlock()
-		if prev.HasUsableUnderlay() {
-			refreshed, rerr := networkInfoFromLinkIndex(m.ctx, m.wifiClient, int(prev.IfIndex))
-			if rerr == nil {
-				info = refreshed
-			} else {
-				info = prev
-			}
-			log.Debug(tag, "keeping physical underlay %s ifIndex=%d (tunnel owns default route)", info.InterfaceName, info.IfIndex)
-		} else {
+		fallback, ferr := bestPhysicalUnderlay(m.ctx, m.wifiClient, prev)
+		if ferr != nil {
 			info = NetworkInfo{Type: NetworkDisconnected}
+		} else {
+			info = fallback
 		}
+		log.Debug(tag, "tunnel owns default route; underlay %s ifIndex=%d type=%d", info.InterfaceName, info.IfIndex, info.Type)
 	} else if err != nil {
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
 
 	m.mu.Lock()
-	prev := m.current
 
 	// Keep DNS if same underlay and new list empty
 	if info.IfIndex != 0 &&

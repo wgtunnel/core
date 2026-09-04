@@ -18,6 +18,8 @@ class DesktopNativeNetworkMonitor(
     private val log = Logger.withTag("DesktopNativeNetworkMonitor")
     private val json = Json { ignoreUnknownKeys = true }
 
+    val info: StateFlow<NetworkInfoDto> = NetworkMonitorBridge.info
+
     init {
         if (startNative) {
             loadBackendNativeLibrary()
@@ -32,18 +34,20 @@ class DesktopNativeNetworkMonitor(
                     )
                 }
                     .onFailure { log.w(it) { "Failed to seed network monitor snapshot" } }
-                log.i { "Native network monitor started" }
+                log.i {
+                    "Native network monitor started type=${info.value.type} iface=${info.value.interfaceName}"
+                }
             }
         }
     }
 
     override val networkState: StateFlow<NetworkSnapshot?> =
-        NetworkMonitorBridge.info
-            .map { info ->
+        info
+            .map { snapshot ->
                 NetworkSnapshot(
-                    key = info.snapshotKey(),
-                    hasIpv6 = info.hasIpv6,
-                    isUsable = info.isUsable,
+                    key = snapshot.snapshotKey(),
+                    hasIpv6 = snapshot.hasIpv6,
+                    isUsable = snapshot.isUsable,
                 )
             }
             .stateIn(
