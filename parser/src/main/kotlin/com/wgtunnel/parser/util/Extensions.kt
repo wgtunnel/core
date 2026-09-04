@@ -3,14 +3,18 @@ package com.wgtunnel.parser.util
 import com.wgtunnel.parser.ConfigParseException
 import com.wgtunnel.parser.ErrorType
 
+fun Map<String, String>.getTrimmed(key: String): String? {
+    return this[key]?.trim()?.takeIf { it.isNotEmpty() }
+}
+
 fun Map<String, String>.getInt(key: String, section: String): Int? {
-    val value = this[key] ?: return null
+    val value = getTrimmed(key) ?: return null
     return value.toIntOrNull()
         ?: throw ConfigParseException(ErrorType.INVALID_VALUE_FORMAT, "$section.$key", value)
 }
 
 fun Map<String, String>.getBool(key: String, section: String): Boolean? {
-    val value = this[key] ?: return null
+    val value = getTrimmed(key) ?: return null
     return when (value.lowercase()) {
         "true",
         "yes",

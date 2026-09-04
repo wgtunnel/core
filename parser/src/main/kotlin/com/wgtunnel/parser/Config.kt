@@ -6,6 +6,7 @@ import com.wgtunnel.parser.util.getBool
 import com.wgtunnel.parser.util.getInt
 import com.wgtunnel.parser.util.getList
 import com.wgtunnel.parser.util.getLong
+import com.wgtunnel.parser.util.getTrimmed
 import kotlin.io.encoding.Base64
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -27,11 +28,17 @@ data class Config(
         peers.forEachIndexed { index, peer -> peer.validate(index) }
     }
 
-    fun asQuickString(): String = buildString {
-        name?.let { appendLine("# Name = $it") }
-        headerComments.forEach { appendLine(it) }
-        ConfigFormatter.appendInterfaceSection(this, `interface`)
-        peers.forEach { ConfigFormatter.appendPeerSection(this, it) }
+    fun asQuickString(include: ConfigQuickInclude = ConfigQuickInclude.All): String = buildString {
+        if (include.core) {
+            name?.let { appendLine("# Name = $it") }
+            headerComments.forEach { appendLine(it) }
+        }
+        if (include.core || include.dns || include.amnezia) {
+            ConfigFormatter.appendInterfaceSection(this, `interface`, include = include)
+        }
+        if (include.peers) {
+            peers.forEach { ConfigFormatter.appendPeerSection(this, it) }
+        }
     }
         .trim()
 
@@ -42,6 +49,14 @@ data class Config(
     }
 
     companion object {
+        fun parseInterfaceQuickString(configString: String): Config {
+            val trimmed = configString.replace("\r\n", "\n").replace("\r", "\n").trim()
+            if (trimmed.isEmpty()) return parseQuickString("[Interface]")
+            val hasInterface =
+                trimmed.lineSequence().any { it.trim().equals("[Interface]", ignoreCase = true) }
+            return parseQuickString(if (hasInterface) trimmed else "[Interface]\n$trimmed")
+        }
+
         fun parseQuickString(configString: String): Config {
             val scripts = InterfaceScriptsBuilder()
             val interfaceMap = mutableMapOf<String, String>()
@@ -208,13 +223,13 @@ data class Config(
         ) =
             InterfaceSection(
                 comments = comments,
-                privateKey = m["PrivateKey"] ?: "",
-                address = m["Address"],
-                dns = m["DNS"],
+                privateKey = m.getTrimmed("PrivateKey") ?: "",
+                address = m.getTrimmed("Address"),
+                dns = m.getTrimmed("DNS"),
                 listenPort = m.getInt("ListenPort", "Interface"),
                 mtu = m.getInt("MTU", "Interface"),
                 fwMark = m.getInt("FwMark", "Interface"),
-                table = m["Table"],
+                table = m.getTrimmed("Table"),
                 saveConfig = m.getBool("SaveConfig", "Interface"),
                 preUp = scripts.preUp,
                 postUp = scripts.postUp,
@@ -227,24 +242,24 @@ data class Config(
                 s2 = m.getInt("S2", "Interface"),
                 s3 = m.getInt("S3", "Interface"),
                 s4 = m.getInt("S4", "Interface"),
-                h1 = m["H1"],
-                h2 = m["H2"],
-                h3 = m["H3"],
-                h4 = m["H4"],
-                i1 = m["I1"],
-                i2 = m["I2"],
-                i3 = m["I3"],
-                i4 = m["I4"],
-                i5 = m["I5"],
-                headerProtectionKey = m["HeaderProtectionKey"],
-                contentPaddingAddition = m["ContentPaddingAddition"],
-                rekeyAfterTime = m["RekeyAfterTime"],
-                rekeyTimeout = m["RekeyTimeout"],
-                rejectAfterTime = m["RejectAfterTime"],
-                keepaliveTimeout = m["KeepaliveTimeout"],
-                maxHandshakeAttempts = m["MaxHandshakeAttempts"],
-                randomTrailers = m["RandomTrailers"],
-                disableCookies = m["DisableCookies"],
+                h1 = m.getTrimmed("H1"),
+                h2 = m.getTrimmed("H2"),
+                h3 = m.getTrimmed("H3"),
+                h4 = m.getTrimmed("H4"),
+                i1 = m.getTrimmed("I1"),
+                i2 = m.getTrimmed("I2"),
+                i3 = m.getTrimmed("I3"),
+                i4 = m.getTrimmed("I4"),
+                i5 = m.getTrimmed("I5"),
+                headerProtectionKey = m.getTrimmed("HeaderProtectionKey"),
+                contentPaddingAddition = m.getTrimmed("ContentPaddingAddition"),
+                rekeyAfterTime = m.getTrimmed("RekeyAfterTime"),
+                rekeyTimeout = m.getTrimmed("RekeyTimeout"),
+                rejectAfterTime = m.getTrimmed("RejectAfterTime"),
+                keepaliveTimeout = m.getTrimmed("KeepaliveTimeout"),
+                maxHandshakeAttempts = m.getTrimmed("MaxHandshakeAttempts"),
+                randomTrailers = m.getTrimmed("RandomTrailers"),
+                disableCookies = m.getTrimmed("DisableCookies"),
                 includedApplications = m.getList("IncludedApplications"),
                 excludedApplications = m.getList("ExcludedApplications"),
             )

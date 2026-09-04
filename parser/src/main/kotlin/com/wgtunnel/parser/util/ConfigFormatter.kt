@@ -1,6 +1,7 @@
 package com.wgtunnel.parser.util
 
 import com.wgtunnel.parser.ActivePeer
+import com.wgtunnel.parser.ConfigQuickInclude
 import com.wgtunnel.parser.InterfaceSection
 import com.wgtunnel.parser.PeerSection
 import kotlin.time.Clock
@@ -14,61 +15,83 @@ object ConfigFormatter {
         sb: StringBuilder,
         iface: InterfaceSection,
         hidePrivateKey: Boolean = false,
+        include: ConfigQuickInclude = ConfigQuickInclude.All,
     ) {
-        iface.comments.forEach { sb.appendLine(it) }
+        if (include.core) {
+            iface.comments.forEach { sb.appendLine(it) }
+        }
         sb.appendLine("[Interface]")
-        sb.appendLine("PrivateKey = ${if (hidePrivateKey) "(hidden)" else iface.privateKey}")
-        iface.address?.let { sb.appendLine("Address = $it") }
-        iface.dns?.let { sb.appendLine("DNS = $it") }
+        if (include.core) {
+            sb.appendLine("PrivateKey = ${if (hidePrivateKey) "(hidden)" else iface.privateKey}")
+            iface.address?.let { sb.appendLine("Address = $it") }
+        }
+        if (include.dns) {
+            appendOptional(sb, "DNS", iface.dns, include.placeholders)
+        }
 
-        iface.preUp?.forEach { sb.appendLine("PreUp = $it") }
-        iface.postUp?.forEach { sb.appendLine("PostUp = $it") }
-        iface.preDown?.forEach { sb.appendLine("PreDown = $it") }
-        iface.postDown?.forEach { sb.appendLine("PostDown = $it") }
+        if (include.core) {
+            iface.preUp?.forEach { sb.appendLine("PreUp = $it") }
+            iface.postUp?.forEach { sb.appendLine("PostUp = $it") }
+            iface.preDown?.forEach { sb.appendLine("PreDown = $it") }
+            iface.postDown?.forEach { sb.appendLine("PostDown = $it") }
 
-        iface.listenPort?.let { sb.appendLine("ListenPort = $it") }
-        iface.mtu?.let { sb.appendLine("MTU = $it") }
-        iface.fwMark?.let { sb.appendLine("FwMark = $it") }
-        iface.table?.let { sb.appendLine("Table = $it") }
-        iface.saveConfig?.let { sb.appendLine("SaveConfig = $it") }
+            iface.listenPort?.let { sb.appendLine("ListenPort = $it") }
+            iface.mtu?.let { sb.appendLine("MTU = $it") }
+            iface.fwMark?.let { sb.appendLine("FwMark = $it") }
+            iface.table?.let { sb.appendLine("Table = $it") }
+            iface.saveConfig?.let { sb.appendLine("SaveConfig = $it") }
+        }
 
-        // AmneziaWG 1.x / 2.x
-        iface.jC?.let { sb.appendLine("Jc = $it") }
-        iface.jMin?.let { sb.appendLine("Jmin = $it") }
-        iface.jMax?.let { sb.appendLine("Jmax = $it") }
-        iface.s1?.let { sb.appendLine("S1 = $it") }
-        iface.s2?.let { sb.appendLine("S2 = $it") }
-        iface.s3?.let { sb.appendLine("S3 = $it") }
-        iface.s4?.let { sb.appendLine("S4 = $it") }
-        iface.h1?.let { sb.appendLine("H1 = $it") }
-        iface.h2?.let { sb.appendLine("H2 = $it") }
-        iface.h3?.let { sb.appendLine("H3 = $it") }
-        iface.h4?.let { sb.appendLine("H4 = $it") }
-        iface.i1?.let { sb.appendLine("I1 = $it") }
-        iface.i2?.let { sb.appendLine("I2 = $it") }
-        iface.i3?.let { sb.appendLine("I3 = $it") }
-        iface.i4?.let { sb.appendLine("I4 = $it") }
-        iface.i5?.let { sb.appendLine("I5 = $it") }
-        // AmneziaWG 3.0+
-        iface.headerProtectionKey?.let { sb.appendLine("HeaderProtectionKey = $it") }
-        iface.contentPaddingAddition?.let { sb.appendLine("ContentPaddingAddition = $it") }
-        iface.rekeyAfterTime?.let { sb.appendLine("RekeyAfterTime = $it") }
-        iface.rekeyTimeout?.let { sb.appendLine("RekeyTimeout = $it") }
-        iface.rejectAfterTime?.let { sb.appendLine("RejectAfterTime = $it") }
-        iface.keepaliveTimeout?.let { sb.appendLine("KeepaliveTimeout = $it") }
-        iface.maxHandshakeAttempts?.let { sb.appendLine("MaxHandshakeAttempts = $it") }
+        if (include.amnezia) {
+            val placeholders = include.placeholders
+            appendOptional(sb, "Jc", iface.jC, placeholders)
+            appendOptional(sb, "Jmin", iface.jMin, placeholders)
+            appendOptional(sb, "Jmax", iface.jMax, placeholders)
+            appendOptional(sb, "S1", iface.s1, placeholders)
+            appendOptional(sb, "S2", iface.s2, placeholders)
+            appendOptional(sb, "S3", iface.s3, placeholders)
+            appendOptional(sb, "S4", iface.s4, placeholders)
+            appendOptional(sb, "H1", iface.h1, placeholders)
+            appendOptional(sb, "H2", iface.h2, placeholders)
+            appendOptional(sb, "H3", iface.h3, placeholders)
+            appendOptional(sb, "H4", iface.h4, placeholders)
+            appendOptional(sb, "I1", iface.i1, placeholders)
+            appendOptional(sb, "I2", iface.i2, placeholders)
+            appendOptional(sb, "I3", iface.i3, placeholders)
+            appendOptional(sb, "I4", iface.i4, placeholders)
+            appendOptional(sb, "I5", iface.i5, placeholders)
+            appendOptional(sb, "HeaderProtectionKey", iface.headerProtectionKey, placeholders)
+            appendOptional(sb, "ContentPaddingAddition", iface.contentPaddingAddition, placeholders)
+            appendOptional(sb, "RekeyAfterTime", iface.rekeyAfterTime, placeholders)
+            appendOptional(sb, "RekeyTimeout", iface.rekeyTimeout, placeholders)
+            appendOptional(sb, "RejectAfterTime", iface.rejectAfterTime, placeholders)
+            appendOptional(sb, "KeepaliveTimeout", iface.keepaliveTimeout, placeholders)
+            appendOptional(sb, "MaxHandshakeAttempts", iface.maxHandshakeAttempts, placeholders)
+            appendOptional(sb, "RandomTrailers", iface.randomTrailers, placeholders)
+            appendOptional(sb, "DisableCookies", iface.disableCookies, placeholders)
+        }
 
-        // AmneziaWG 3.1
-        iface.randomTrailers?.let { sb.appendLine("RandomTrailers = $it") }
-        iface.disableCookies?.let { sb.appendLine("DisableCookies = $it") }
+        if (include.core) {
+            iface.includedApplications
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { sb.appendLine("IncludedApplications = ${it.joinToString(",")}") }
+            iface.excludedApplications
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { sb.appendLine("ExcludedApplications = ${it.joinToString(",")}") }
+        }
+    }
 
-        // Android
-        iface.includedApplications
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { sb.appendLine("IncludedApplications = ${it.joinToString(",")}") }
-        iface.excludedApplications
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { sb.appendLine("ExcludedApplications = ${it.joinToString(",")}") }
+    private fun appendOptional(
+        sb: StringBuilder,
+        key: String,
+        value: Any?,
+        placeholders: Boolean,
+    ) {
+        if (value != null) {
+            sb.appendLine("$key = $value")
+        } else if (placeholders) {
+            sb.appendLine("$key = ")
+        }
     }
 
     fun appendPeerSection(sb: StringBuilder, peer: PeerSection) {
