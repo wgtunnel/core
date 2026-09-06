@@ -106,12 +106,22 @@ func (f *WrapperTUN) Write(bufs [][]byte, offset int) (int, error) {
 
 func (f *WrapperTUN) Close() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.closed {
+		f.mu.Unlock()
 		return nil
 	}
 	f.closed = true
-	return f.realTUN.Close()
+	engine := f.dns
+	f.dns = nil
+	real := f.realTUN
+	f.mu.Unlock()
+	if engine != nil {
+		_ = engine.Close()
+	}
+	if real != nil {
+		return real.Close()
+	}
+	return nil
 }
 
 func (f *WrapperTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {

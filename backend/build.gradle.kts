@@ -65,9 +65,6 @@ kotlin {
             implementation(libs.ipaddress)
 
         }
-        jvmMain.dependencies {
-            implementation(libs.logback.classic)
-        }
     }
 }
 

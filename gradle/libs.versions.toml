@@ -6,20 +6,18 @@ android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
 lib = "1.5.2"
+tink = "1.23.0"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.11.0"
  # Corutines
 kotlinx-coroutines = "1.11.0"
 ktfmt = "0.27.0"
 
-# Logging
-logbackClassic = "1.6.3"
 kermit = "2.1.0"
 
 # Util
 ipaddress = "5.6.2"
 cryptoRand = "0.6.0"
-bc = "1.85.2"
 humanReadable = "1.13.1"
 datetime = "0.8.0"
 commonsValidator = "1.11.0"
@@ -48,15 +46,12 @@ androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version
 
 # Logging
 kermit = { module = "co.touchlab:kermit", version.ref = "kermit" }
-logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logbackClassic" }
-
 # Corutines
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 
 # Util
 ipaddress = { module = "com.github.seancfoley:ipaddress", version.ref = "ipaddress" }
 crypto-rand = { module = "org.kotlincrypto.random:crypto-rand", version.ref = "cryptoRand" }
-bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bc" }
 human-readable = { module = "nl.jacobras:Human-Readable", version.ref = "humanReadable" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 commons-validator = { module = "commons-validator:commons-validator", version.ref = "commonsValidator" }
@@ -65,6 +60,7 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 
 [plugins]
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }

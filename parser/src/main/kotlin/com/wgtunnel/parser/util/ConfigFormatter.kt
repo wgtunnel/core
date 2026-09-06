@@ -4,10 +4,10 @@ import com.wgtunnel.parser.ActivePeer
 import com.wgtunnel.parser.ConfigQuickInclude
 import com.wgtunnel.parser.InterfaceSection
 import com.wgtunnel.parser.PeerSection
+import java.util.Locale
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Instant
-import nl.jacobras.humanreadable.HumanReadable
 
 object ConfigFormatter {
 
@@ -151,8 +151,20 @@ object ConfigFormatter {
                 sb.appendLine("LastHandshake = ${agoDuration.toDetailedString()} ago")
             }
         }
-        peer.txBytes?.let { sb.appendLine("TxBytes = ${HumanReadable.fileSize(it, decimals = 1)}") }
-        peer.rxBytes?.let { sb.appendLine("RxBytes = ${HumanReadable.fileSize(it, decimals = 1)}") }
+        peer.txBytes?.let { sb.appendLine("TxBytes = ${it.toHumanReadableByteSize()}") }
+        peer.rxBytes?.let { sb.appendLine("RxBytes = ${it.toHumanReadableByteSize()}") }
+    }
+
+    private fun Long.toHumanReadableByteSize(): String {
+        if (this < 1024) return "$this B"
+        val units = arrayOf("B", "KB", "MB", "GB", "TB", "PB")
+        var value = this.toDouble()
+        var unitIndex = 0
+        while (value >= 1024 && unitIndex < units.size - 1) {
+            value /= 1024
+            unitIndex++
+        }
+        return String.format(Locale.ROOT, "%.1f %s", value, units[unitIndex])
     }
 
     private fun Duration.toDetailedString(): String {
@@ -162,11 +174,11 @@ object ConfigFormatter {
         val seconds = toComponents { _, _, _, s, _ -> s }
 
         val parts = mutableListOf<String>()
-        if (days > 0) parts.add("$days day${if (days > 1) "s" else ""}")
-        if (hours > 0) parts.add("$hours hour${if (hours > 1) "s" else ""}")
-        if (minutes > 0) parts.add("$minutes minute${if (minutes > 1) "s" else ""}")
-        if (seconds > 0) parts.add("$seconds second${if (seconds > 1) "s" else ""}")
+        if (days > 0) parts.add("${days}d")
+        if (hours > 0) parts.add("${hours}h")
+        if (minutes > 0) parts.add("${minutes}m")
+        if (seconds > 0 || parts.isEmpty()) parts.add("${seconds}s")
 
-        return if (parts.isEmpty()) "0 seconds" else parts.joinToString(" ")
+        return parts.joinToString(" ")
     }
 }

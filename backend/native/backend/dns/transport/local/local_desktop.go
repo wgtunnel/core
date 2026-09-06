@@ -5,6 +5,7 @@ package local
 import (
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wgtunnel/backend/bootstrap/bypass"
@@ -13,8 +14,21 @@ import (
 	"github.com/wgtunnel/backend/network"
 )
 
-// NewLocalTransport builds local DNS from network.Monitor underlay
+var (
+	localOnce sync.Once
+	localInst transport.Transport
+)
+
+// NewLocalTransport returns the process-wide underlay DNS transport.
+// The network monitor cannot unregister listeners, so this must be a singleton.
 func NewLocalTransport() transport.Transport {
+	localOnce.Do(func() {
+		localInst = newLocalTransport()
+	})
+	return localInst
+}
+
+func newLocalTransport() transport.Transport {
 	_ = network.StartMonitor()
 	mon := network.GetMonitor()
 	u := NewUnderlayDNS()

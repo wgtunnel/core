@@ -1,15 +1,15 @@
 package com.wgtunnel.parser.crypto
 
+import com.google.crypto.tink.subtle.X25519
+import java.security.SecureRandom
+import java.util.Base64
 import kotlin.experimental.and
-import org.bouncycastle.math.ec.rfc7748.X25519
-import org.bouncycastle.util.encoders.Base64
-import org.kotlincrypto.random.CryptoRand
 
 class Key private constructor(private val key: ByteArray) {
 
     fun getBytes(): ByteArray = key.copyOf()
 
-    fun toBase64(): String = Base64.encode(key).decodeToString()
+    fun toBase64(): String = Base64.getEncoder().encodeToString(key)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -21,7 +21,7 @@ class Key private constructor(private val key: ByteArray) {
 
     companion object {
         fun fromBase64(str: String): Key {
-            val bytes = Base64.decode(str)
+            val bytes = Base64.getDecoder().decode(str)
             if (bytes.size != 32) throw KeyFormatException(Format.BINARY, Type.LENGTH)
             return Key(bytes)
         }
@@ -33,15 +33,15 @@ class Key private constructor(private val key: ByteArray) {
 
         fun generatePrivateKey(): Key {
             val priv = ByteArray(32)
-            CryptoRand.nextBytes(priv)
+            SecureRandom().nextBytes(priv)
+
             priv[0] = priv[0] and 248.toByte()
             priv[31] = (priv[31].toInt() and 127 or 64).toByte()
             return Key(priv)
         }
 
         fun generatePublicKey(privateKey: Key): Key {
-            val pub = ByteArray(32)
-            X25519.scalarMultBase(privateKey.getBytes(), 0, pub, 0)
+            val pub = X25519.publicFromPrivate(privateKey.getBytes())
             return Key(pub)
         }
     }

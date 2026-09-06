@@ -118,6 +118,10 @@ func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string)
 func (t *Transport) Close() error {
 	if t.client != nil {
 		t.client.CloseIdleConnections()
+		if tr, ok := t.client.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		t.client = nil
 	}
 	return nil
 }

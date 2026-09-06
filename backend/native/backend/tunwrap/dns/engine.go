@@ -65,16 +65,20 @@ func (e *Engine) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeResult, e
 
 func (e *Engine) Close() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	transports := e.transports
+	router := e.router
+	e.transports = nil
+	e.router = nil
+	e.mu.Unlock()
 
 	var firstErr error
-	for _, t := range e.transports {
+	for _, t := range transports {
 		if err := t.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	if e.router != nil {
-		if err := e.router.Close(); err != nil && firstErr == nil {
+	if router != nil {
+		if err := router.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

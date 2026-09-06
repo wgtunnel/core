@@ -185,8 +185,8 @@ internal class TunnelRecovery(
                         val snap = snapshots.value
                         if (
                             snap.recovery.ipv4Fallback &&
-                                snap.activeNetworkKey != null &&
-                                snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
+                                (snap.activeNetworkKey != null) &&
+                                (snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load())
                         ) {
                             tryLightIpv4Fallback(snap)
                             delay(stabilizeWindow)

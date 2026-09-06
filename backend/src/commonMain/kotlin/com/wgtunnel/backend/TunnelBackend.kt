@@ -539,7 +539,8 @@ class TunnelBackend(
     }
 
     private suspend fun cleanup(tunnelId: Int) {
-        // Cancel only as cleanup may run from that job
+        // Cancel only as cleanup may run from that job. Do not join: recovery bounce is
+        // NonCancellable and waits on tunnelMutex, which we hold here.
         pendingResolutionJobs.remove(tunnelId)?.cancel()
         tunnelJobs.remove(tunnelId)?.cancel()
 

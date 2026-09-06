@@ -11,9 +11,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.core)
 
     implementation(libs.crypto.rand)
-    implementation(libs.bouncycastle)
+    implementation(libs.tink)
 
-    implementation(libs.human.readable)
     implementation(libs.kotlinx.datetime)
     implementation(libs.commons.validator)
     implementation(libs.ipaddress)
