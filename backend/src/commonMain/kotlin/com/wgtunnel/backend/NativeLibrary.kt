@@ -1,3 +1,3 @@
 package com.wgtunnel.backend
 
-expect fun loadBackendNativeLibrary()
+expect fun loadBackendNativeLibrary(): Boolean

@@ -22,8 +22,8 @@ class DesktopNativeNetworkMonitor(
 
     init {
         if (startNative) {
-            loadBackendNativeLibrary()
-            val ok = NetworkMonitorBridge.start()
+            val libraryLoaded = loadBackendNativeLibrary()
+            val ok = libraryLoaded && NetworkMonitorBridge.start()
             if (!ok) {
                 log.e { "Failed to start native network monitor" }
             } else {

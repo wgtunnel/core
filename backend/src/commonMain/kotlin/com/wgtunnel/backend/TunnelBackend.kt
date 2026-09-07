@@ -94,7 +94,9 @@ class TunnelBackend(
 
     init {
         BackendLog.applyDefaultIfNeeded()
-        loadBackendNativeLibrary()
+        if (!loadBackendNativeLibrary()) {
+            log.e { "Failed to load native backend library; tunnel will not function" }
+        }
         BackendRuntime.install(runtimeManager, this, applicationProvider)
         setStatusCallback(this)
         UnderlayNetworkSynchronizer(networkMonitor, scope)
