@@ -108,10 +108,12 @@ $(DESTDIR)/libwg-linux-amd64.so: $(GO_DIR)/.prepared
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
+# -Wl,--export-all-symbols required for Windows to fix UnsatisfiedLinkError
 $(DESTDIR)/libwg-windows-amd64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_LDFLAGS="-Wl,--export-all-symbols" \
 	GOOS=windows GOARCH=amd64 \
 	CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
@@ -121,6 +123,7 @@ $(DESTDIR)/libwg-windows-arm64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
 	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_LDFLAGS="-Wl,--export-all-symbols" \
 	GOOS=windows GOARCH=arm64 \
 	CC=aarch64-w64-mingw32-gcc CXX=aarch64-w64-mingw32-g++ \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
