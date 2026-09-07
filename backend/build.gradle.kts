@@ -65,6 +65,10 @@ kotlin {
             implementation(libs.ipaddress)
 
         }
+        jvmMain.dependencies {
+            implementation(libs.nucleus.core.runtime)
+
+        }
     }
 }
 
@@ -165,5 +169,11 @@ val cleanDesktopNatives = tasks.register<Exec>("cleanDesktopNatives") {
 
 tasks.named<Delete>("clean") {
     dependsOn(cleanDesktopNatives)
-    delete(goDir.dir("build"), goDir.dir("out"), jvmNativeResources)
+    delete(
+        goDir.dir("build"),
+        goDir.dir("out"),
+        fileTree(jvmNativeResources) {
+            include("**/libwg.so", "**/wg.dll", "**/libwg.dylib")
+        }
+    )
 }

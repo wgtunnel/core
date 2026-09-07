@@ -5,7 +5,8 @@ android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.5.3"
+lib = "1.5.4"
+nucleusCoreRuntime = "2.5.14"
 tink = "1.23.0"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.11.0"
@@ -60,6 +61,7 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+nucleus-core-runtime = { module = "dev.nucleusframework:nucleus.core-runtime", version.ref = "nucleusCoreRuntime" }
 tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 
 [plugins]

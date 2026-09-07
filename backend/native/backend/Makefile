@@ -151,18 +151,24 @@ copy_to_resources: build_all
 		os=`echo "$$plat" | cut -d- -f1`; \
 		arch=`echo "$$plat" | cut -d- -f2`; \
 		subdir=; \
-		if [ "$$os" = "linux" ] && [ "$$arch" = "amd64" ]; then subdir=linux-x86_64; fi; \
-		if [ "$$os" = "windows" ] && [ "$$arch" = "amd64" ]; then subdir=windows-x86_64; fi; \
-		if [ "$$os" = "windows" ] && [ "$$arch" = "arm64" ]; then subdir=windows-aarch64; fi; \
-		if [ "$$os" = "darwin" ] && [ "$$arch" = "amd64" ]; then subdir=darwin-x86_64; fi; \
+		if [ "$$os" = "linux" ] && [ "$$arch" = "amd64" ]; then subdir=linux-x64; fi; \
+		if [ "$$os" = "windows" ] && [ "$$arch" = "amd64" ]; then subdir=win32-x64; fi; \
+		if [ "$$os" = "windows" ] && [ "$$arch" = "arm64" ]; then subdir=win32-aarch64; fi; \
+		if [ "$$os" = "darwin" ] && [ "$$arch" = "amd64" ]; then subdir=darwin-x64; fi; \
 		if [ "$$os" = "darwin" ] && [ "$$arch" = "arm64" ]; then subdir=darwin-aarch64; fi; \
 		libext=so; \
-		if [ "$$os" = "windows" ]; then libext=dll; fi; \
-		if [ "$$os" = "darwin" ]; then libext=dylib; fi; \
+		filename="libwg.so"; \
+		if [ "$$os" = "windows" ]; then \
+			libext=dll; \
+			filename="wg.dll"; \
+		elif [ "$$os" = "darwin" ]; then \
+			libext=dylib; \
+			filename="libwg.dylib"; \
+		fi; \
 		dest_dir="$(RESOURCEDIR)/$$subdir"; \
 		mkdir -p "$$dest_dir"; \
-		cp "$(DESTDIR)/libwg-$$plat.$$libext" "$$dest_dir/libwg.$$libext"; \
-		echo "Copied $$plat -> $$dest_dir/libwg.$$libext"; \
+		cp "$(DESTDIR)/libwg-$$plat.$$libext" "$$dest_dir/$$filename"; \
+		echo "Copied $$plat -> $$dest_dir/$$filename"; \
 	done
 
 clean:
