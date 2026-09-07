@@ -55,6 +55,7 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 		log.Debug(routerTag, "route name=%s to transport=%s (suffix rule)", name, rule.Transport)
 		resp, err := t.Exchange(ctx, msg)
 		if err != nil {
+			log.Error(routerTag, "exchange name=%s transport=%s (suffix rule): %v", name, rule.Transport, err)
 			return nil, err
 		}
 		return &ExchangeResult{Msg: resp, DisableCache: rule.DisableCache}, nil
@@ -67,6 +68,7 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 	log.Debug(routerTag, "route name=%s to transport=%s (default)", name, r.final)
 	resp, err := t.Exchange(ctx, msg)
 	if err != nil {
+		log.Error(routerTag, "exchange name=%s transport=%s (default): %v", name, r.final, err)
 		return nil, err
 	}
 

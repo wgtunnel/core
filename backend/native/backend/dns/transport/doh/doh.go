@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -20,6 +21,7 @@ type Transport struct {
 	Timeout     time.Duration
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	mu     sync.Mutex
 	client *http.Client
 }
 
@@ -33,9 +35,13 @@ func New(rawURLs []string, serverName string) *Transport {
 
 func (t *Transport) Type() string { return "doh" }
 
-func (t *Transport) init() {
+// httpClient returns the shared http.Client, creating it on first use. Safe to call
+// concurrently with Close()
+func (t *Transport) httpClient() *http.Client {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.client != nil {
-		return
+		return t.client
 	}
 	// Custom TLSClientConfig disables Go's automatic HTTP/2. ForceAttemptHTTP2
 	// enables ALPN h2 when the server supports it, fixing servers that are HTTP2 only
@@ -53,13 +59,13 @@ func (t *Transport) init() {
 		Timeout:   t.Timeout,
 		Transport: tr,
 	}
+	return t.client
 }
 
 func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
 	if len(t.URLs) == 0 {
 		return nil, fmt.Errorf("doh: no urls configured")
 	}
-	t.init()
 
 	wire, err := msg.Pack()
 	if err != nil {
@@ -93,7 +99,7 @@ func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string)
 		req.Host = t.ServerName
 	}
 
-	resp, err := t.client.Do(req)
+	resp, err := t.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("doh: do %s: %w", rawURL, err)
 	}
@@ -116,12 +122,16 @@ func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string)
 }
 
 func (t *Transport) Close() error {
-	if t.client != nil {
-		t.client.CloseIdleConnections()
-		if tr, ok := t.client.Transport.(*http.Transport); ok {
+	t.mu.Lock()
+	client := t.client
+	t.client = nil
+	t.mu.Unlock()
+
+	if client != nil {
+		client.CloseIdleConnections()
+		if tr, ok := client.Transport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
-		t.client = nil
 	}
 	return nil
 }

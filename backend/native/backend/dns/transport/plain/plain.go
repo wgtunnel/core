@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -18,7 +19,9 @@ type Transport struct {
 	Timeout     time.Duration
 	Dialer      *net.Dialer
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
-	client      *dns.Client
+
+	initOnce sync.Once
+	client   *dns.Client
 }
 
 func New(servers []string, network string) *Transport {
@@ -59,27 +62,28 @@ func normalizePlainServer(s string) string {
 
 func (t *Transport) Type() string { return "plain" }
 
+// init lazily builds the fallback dns.Client used only when no DialContext is
+// supplied (this app always supplies one; this path exists for other embedders
+// of this package). sync.Once makes it safe under concurrent Exchange calls.
 func (t *Transport) init() {
-	if t.client != nil {
-		return
-	}
-	dialer := t.Dialer
-	if dialer == nil {
-		dialer = &net.Dialer{Timeout: t.Timeout}
-	}
-	t.client = &dns.Client{
-		Net:     t.Network,
-		Dialer:  dialer,
-		Timeout: t.Timeout,
-		UDPSize: 4096,
-	}
+	t.initOnce.Do(func() {
+		dialer := t.Dialer
+		if dialer == nil {
+			dialer = &net.Dialer{Timeout: t.Timeout}
+		}
+		t.client = &dns.Client{
+			Net:     t.Network,
+			Dialer:  dialer,
+			Timeout: t.Timeout,
+			UDPSize: 4096,
+		}
+	})
 }
 
 func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
 	if len(t.Servers) == 0 {
 		return nil, fmt.Errorf("plain: no servers configured")
 	}
-	t.init()
 
 	var lastErr error
 	for _, server := range t.Servers {
@@ -104,6 +108,7 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 
 func (t *Transport) exchangeOne(ctx context.Context, msg *dns.Msg, server string) (*dns.Msg, error) {
 	if t.DialContext == nil {
+		t.init()
 		m, _, err := t.client.ExchangeContext(ctx, msg, server)
 		return m, err
 	}
