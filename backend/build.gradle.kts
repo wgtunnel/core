@@ -126,17 +126,6 @@ mavenPublishing {
 val goDir = layout.projectDirectory.dir("native/backend")
 val jvmNativeResources = layout.projectDirectory.dir("src/jvmMain/resources/natives")
 
-publishing {
-    publications.named<MavenPublication>("jvm") {
-        listOf("win32-x64", "win32-aarch64").forEach { arch ->
-            artifact(jvmNativeResources.file("$arch/wintun.dll")) {
-                classifier = "wintun-$arch"
-                extension = "dll"
-            }
-        }
-    }
-}
-
 val jdkHome =
     extensions
         .getByType<JavaToolchainService>()
