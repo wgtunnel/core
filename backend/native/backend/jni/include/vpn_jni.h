@@ -2,9 +2,11 @@
 #include <jni.h>
 #include <stdint.h>
 
+// n must be exactly 64-bit on every platform to match cgo's _GoString_ On Windows specifically,
+// long is 32-bit so we need to use int64_t
 struct go_string {
     const char *str;
-    long n;
+    int64_t n;
 };
 
 /* Helpers */

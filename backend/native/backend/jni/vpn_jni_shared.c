@@ -37,7 +37,7 @@ jstring_to_go(JNIEnv *env, jstring s, const char **pinned)
     }
     return (struct go_string){
             .str = *pinned,
-            .n = (long)(*env)->GetStringUTFLength(env, s),
+            .n = (int64_t)(*env)->GetStringUTFLength(env, s),
     };
 }
 
@@ -55,7 +55,7 @@ cstr_to_go(const char *s)
     if (s == NULL) {
         return (struct go_string){ .str = "", .n = 0 };
     }
-    return (struct go_string){ .str = s, .n = (long)strlen(s) };
+    return (struct go_string){ .str = s, .n = (int64_t)strlen(s) };
 }
 
 JavaVM *
