@@ -200,7 +200,6 @@ internal class TunnelRecovery(
                     noteDeviceAwake(beforeBounce)
                     if (
                         beforeBounce.recovery.seamlessRecovery &&
-                            beforeBounce.deviceAwake &&
                             !beforeBounce.bootstrapPending &&
                             seamlessRecoveryAttempted < MAX_SEAMLESS_RECOVERY_RETRIES
                     ) {
@@ -208,8 +207,7 @@ internal class TunnelRecovery(
                         val ready = snapshots.value
                         noteDeviceAwake(ready)
                         if (!ready.shouldKeepFailureRecoveryEpisode) break
-                        // No full bounce while in Doze or when bootstrap is in flight
-                        if (!ready.deviceAwake || ready.bootstrapPending) continue
+                        if (ready.bootstrapPending) continue
                         if (!ready.recovery.seamlessRecovery) continue
 
                         tryFullTunnelBounce(ready.recovery.dynamicDnsRecovery)
@@ -218,7 +216,7 @@ internal class TunnelRecovery(
                             "Tunnel bounce attempt $seamlessRecoveryAttempted of $MAX_SEAMLESS_RECOVERY_RETRIES"
                         }
                     } else {
-                        // Seamless disabled, in Doze, bootstrap pending, or max retries
+                        // Seamless disabled, bootstrap pending, or max retries
                         delay(stabilizeWindow)
                     }
                 }
