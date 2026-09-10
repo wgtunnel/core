@@ -15,8 +15,13 @@ import (
 	"github.com/wgtunnel/backend/log"
 )
 
-func NewBind() conn.Bind {
-	return conn.NewStdNetBindWithControl(protectControlFunc)
+// NewBind protects the socket via VpnService.protect when bypass is set, so
+// its traffic doesn't loop back into the tunnel, otherwise it's a plain bind.
+func NewBind(bypass bool) conn.Bind {
+	if bypass {
+		return conn.NewStdNetBindWithControl(protectControlFunc)
+	}
+	return conn.NewStdNetBind()
 }
 
 func protectControlFunc(network, address string, c syscall.RawConn) error {

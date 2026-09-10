@@ -76,7 +76,8 @@ func startVpnDevice(
 
 	tunDevice := device.NewDevice(
 		tun,
-		bind.NewBind(),
+		// VPN mode always needs the socket protected on Android, other platforms ignore this flag
+		bind.NewBind(true),
 		log.WithTag("VpnTun/"+interfaceName).DeviceLogger(),
 		statusCB,
 	)

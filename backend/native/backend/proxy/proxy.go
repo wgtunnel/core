@@ -9,7 +9,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
@@ -82,12 +81,7 @@ func startProxy(handle int32, ifName string, config string, uapiPath string, byp
 		return -1
 	}
 
-	var bind conn.Bind
-	if bypass == 1 {
-		bind = binder.NewBind()
-	} else {
-		bind = conn.NewStdNetBind()
-	}
+	bind := binder.NewBind(bypass == 1)
 
 	statusCB := func(code device.StatusCode) {
 		// Report to Kotlin with at-least-once delivery until Kotlin acks.

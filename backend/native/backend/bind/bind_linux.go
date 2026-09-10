@@ -14,7 +14,7 @@ const tag = "Bind"
 
 // NewBind marks every UDP socket with the tunnel bypass fwmark so handshake
 // and data packets are accepted by the kill switch.
-func NewBind() conn.Bind {
+func NewBind(_ bool) conn.Bind {
 	return conn.NewStdNetBindWithControl(bypassControlFunc)
 }
 

@@ -1,4 +1,8 @@
+ifeq ($(OS),Windows_NT)
+SHELL := bash
+else
 SHELL := /bin/bash
+endif
 
 BUILDDIR ?= $(CURDIR)/build
 DESTDIR ?= $(CURDIR)/out
@@ -18,17 +22,17 @@ HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOST_ARCH := $(shell uname -m)
 
 # Project JNI headers (vpn_jni.h)
-JNI_INCLUDES := -I$(CURDIR)/jni/include
+JNI_INCLUDES := "-I$(CURDIR)/jni/include"
 
 # JDK JNI headers. Gradle passes JAVA_HOME from the compile toolchain.
 JAVA_HOME ?= $(shell dirname $$(dirname $$(readlink -f $$(which java))))
 
 ifeq ($(HOST_OS),darwin)
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/darwin
+  JDK_JNI_CFLAGS := "-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/darwin"
 else ifeq ($(HOST_OS),linux)
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/linux
+  JDK_JNI_CFLAGS := "-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/linux"
 else
-  JDK_JNI_CFLAGS := -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/win32
+  JDK_JNI_CFLAGS := "-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/win32"
 endif
 
 DESKTOP_CGO_CFLAGS := $(JDK_JNI_CFLAGS) $(JNI_INCLUDES)
@@ -42,6 +46,9 @@ NDK_GO_ARCH_MAP_aarch64 := arm64
 
 ifeq ($(HOST_OS),darwin)
 PLATFORMS := darwin-amd64 darwin-arm64 linux-amd64 windows-amd64 windows-arm64
+else ifeq ($(OS),Windows_NT)
+
+PLATFORMS := windows-amd64
 else
 PLATFORMS := linux-amd64 windows-amd64
 endif
@@ -103,26 +110,37 @@ $(DESTDIR)/libwg-linux-amd64.so: $(GO_DIR)/.prepared
 	@test -f "$(JAVA_HOME)/include/jni.h" || (echo "jni.h not found; JAVA_HOME=$(JAVA_HOME)"; exit 1)
 	@test -f "$(JAVA_HOME)/include/linux/jni_md.h" || (echo "linux/jni_md.h not found"; exit 1)
 	$(PATCHED_GO) \
-	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
 	GOOS=linux GOARCH=amd64 \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
 # -Wl,--export-all-symbols required for Windows to fix UnsatisfiedLinkError
+ifeq ($(OS),Windows_NT)
+$(DESTDIR)/libwg-windows-amd64.dll:
+	@mkdir -p "$(DESTDIR)"
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
+	CGO_LDFLAGS="-Wl,--export-all-symbols" \
+	GOOS=windows GOARCH=amd64 \
+	CC=gcc CXX=g++ \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+		-o "$@" -buildmode=c-shared .
+else
 $(DESTDIR)/libwg-windows-amd64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
-	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
 	CGO_LDFLAGS="-Wl,--export-all-symbols" \
 	GOOS=windows GOARCH=amd64 \
 	CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
+endif
 
 $(DESTDIR)/libwg-windows-arm64.dll: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
-	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
 	CGO_LDFLAGS="-Wl,--export-all-symbols" \
 	GOOS=windows GOARCH=arm64 \
 	CC=aarch64-w64-mingw32-gcc CXX=aarch64-w64-mingw32-g++ \
@@ -132,7 +150,7 @@ $(DESTDIR)/libwg-windows-arm64.dll: $(GO_DIR)/.prepared
 $(DESTDIR)/libwg-darwin-amd64.dylib: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
-	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
 	GOOS=darwin GOARCH=amd64 \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
@@ -140,7 +158,7 @@ $(DESTDIR)/libwg-darwin-amd64.dylib: $(GO_DIR)/.prepared
 $(DESTDIR)/libwg-darwin-arm64.dylib: $(GO_DIR)/.prepared
 	@mkdir -p "$(DESTDIR)"
 	$(PATCHED_GO) \
-	CGO_ENABLED=1 CGO_CFLAGS="$(DESKTOP_CGO_CFLAGS)" \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
 	GOOS=darwin GOARCH=arm64 \
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
