@@ -1,11 +1,11 @@
 [versions]
 agp = "9.4.0-rc02"
-kotlin = "2.4.10"
+kotlin = "2.4.20"
 android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.5.9"
+lib = "1.5.10"
 nucleusCoreRuntime = "2.5.14"
 tink = "1.23.0"
 vanniktechMavenPublish = "0.37.0"
@@ -19,7 +19,6 @@ kermit = "2.1.0"
 # Util
 ipaddress = "5.6.2"
 cryptoRand = "0.6.0"
-humanReadable = "1.13.1"
 datetime = "0.8.0"
 commonsValidator = "1.11.0"
 
@@ -53,7 +52,6 @@ kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-c
 # Util
 ipaddress = { module = "com.github.seancfoley:ipaddress", version.ref = "ipaddress" }
 crypto-rand = { module = "org.kotlincrypto.random:crypto-rand", version.ref = "cryptoRand" }
-human-readable = { module = "nl.jacobras:Human-Readable", version.ref = "humanReadable" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 commons-validator = { module = "commons-validator:commons-validator", version.ref = "commonsValidator" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
