@@ -124,9 +124,16 @@ internal class EndpointResolver(
                             DnsBootstrapResult()
                         }
                     if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
-                        resolvedDns = tunnelDnsConfig.withResolvedAddresses(result)
+                        // Skip IPv6 upstream candidates on a tunnel with no IPv6
+                        // interface addresses
+                        val includeIpv6 =
+                            mode.config.`interface`.hasIpv6Address || result.ipv4.isEmpty()
+                        resolvedDns = tunnelDnsConfig.withResolvedAddresses(result, includeIpv6)
                         log.i { "Tunnel DNS upstream resolved" }
-                        log.d { "Tunnel DNS upstream $host → v4=${result.ipv4} v6=${result.ipv6}" }
+                        log.d {
+                            "Tunnel DNS upstream $host → v4=${result.ipv4} v6=${result.ipv6} " +
+                                "includeIpv6=$includeIpv6"
+                        }
                         progressed = true
                     } else {
                         log.w { "No addresses yet for tunnel DNS host" }

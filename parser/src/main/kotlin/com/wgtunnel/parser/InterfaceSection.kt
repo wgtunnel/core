@@ -82,6 +82,9 @@ data class InterfaceSection(
                 allPreDown.isNotEmpty() ||
                 allPostDown.isNotEmpty()
 
+    val hasIpv6Address: Boolean
+        get() = address?.split(",").orEmpty().any { it.contains(':') }
+
     @Throws(ConfigParseException::class)
     fun validate() {
         if (privateKey.isBlank())

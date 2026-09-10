@@ -207,7 +207,13 @@ class TunnelBackend(
             byTunnelId[tunnelId] = handle
 
             try {
-                val result = engine.start(tunnelId, handle, mode, tunnelDnsConfig)
+                // We snapshot kill switch state onto the DNS config here as the single
+                // choke point before native start. Android has no live native kill
+                // switch signal has it does a full teardown on change desktop reads
+                // live firewall state instead and ignores this field.
+                val killSwitchStampedDnsConfig =
+                    tunnelDnsConfig?.copy(killSwitchEnabled = _status.value.killSwitch.enabled)
+                val result = engine.start(tunnelId, handle, mode, killSwitchStampedDnsConfig)
                 nativeOwnedHandles.add(handle)
                 updateActiveTunnel(tunnelId) {
                     it.copy(

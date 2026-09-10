@@ -12,6 +12,15 @@ import (
 
 const routerTag = "DnsRouter"
 
+// localTransportName is the tag used for the transport that dials the
+// physical underlay interface directly, bypassing the tunnel. When
+// kill switch is enabled, we don't allow this bypass to happen
+const localTransportName = "local"
+
+// ErrLocalBlockedByKillSwitch is returned instead of dialing the local
+// transport while the kill switch is enabled
+var ErrLocalBlockedByKillSwitch = fmt.Errorf("dns: local transport blocked by kill switch")
+
 // Router selects which Transport handles a query
 type Router interface {
 	Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeResult, error)
@@ -20,15 +29,24 @@ type Router interface {
 
 // SimpleRouter is a first-match-wins DNS router
 type SimpleRouter struct {
-	rules  []Rule
-	final  string
-	engine *Engine
+	rules            []Rule
+	final            string
+	engine           *Engine
+	killSwitchActive func() bool
 }
 
-func NewSimpleRouter(engine *Engine, final string) *SimpleRouter {
+// NewSimpleRouter builds a router. killSwitchActive, when non-nil, is
+// consulted on every query that would otherwise dial the local (underlay)
+// transport; when it reports true, the local transport is refused instead
+// of dialed.
+func NewSimpleRouter(engine *Engine, final string, killSwitchActive func() bool) *SimpleRouter {
+	if killSwitchActive == nil {
+		killSwitchActive = func() bool { return false }
+	}
 	return &SimpleRouter{
-		engine: engine,
-		final:  final,
+		engine:           engine,
+		final:            final,
+		killSwitchActive: killSwitchActive,
 	}
 }
 
@@ -48,6 +66,10 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 		if !matchRule(rule, name, q.Qtype) {
 			continue
 		}
+		if rule.Transport == localTransportName && r.killSwitchActive() {
+			log.Debug(routerTag, "route name=%s to transport=%s (suffix rule): blocked by kill switch", name, rule.Transport)
+			return nil, ErrLocalBlockedByKillSwitch
+		}
 		t, ok := r.engine.GetTransport(rule.Transport)
 		if !ok {
 			return nil, fmt.Errorf("dns: transport %q not found", rule.Transport)
@@ -61,6 +83,10 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 		return &ExchangeResult{Msg: resp, DisableCache: rule.DisableCache}, nil
 	}
 
+	if r.final == localTransportName && r.killSwitchActive() {
+		log.Debug(routerTag, "route name=%s to transport=%s (default): blocked by kill switch", name, r.final)
+		return nil, ErrLocalBlockedByKillSwitch
+	}
 	t, ok := r.engine.GetTransport(r.final)
 	if !ok {
 		return nil, fmt.Errorf("dns: final transport %q not found", r.final)

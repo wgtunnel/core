@@ -15,6 +15,7 @@ data class TunnelDnsConfig(
     val foreignDnsPolicy: ForeignDnsPolicy = ForeignDnsPolicy.REDIRECT,
     // How local suffixes are routed when not empty
     val splitMode: DnsSplitMode = DnsSplitMode.SYSTEM,
+    val killSwitchEnabled: Boolean = false,
 ) {
     fun needsResolve(): Boolean {
         if (defaultTransport == "local") return false
@@ -26,7 +27,11 @@ data class TunnelDnsConfig(
         return upstream.firstOrNull()?.let { hostFromEntry(it) }
     }
 
-    fun withResolvedAddresses(ips: DnsBootstrapResult): TunnelDnsConfig {
+    // includeIpv6 should be false when the tunnel interface has no IPv6 address
+    fun withResolvedAddresses(
+        ips: DnsBootstrapResult,
+        includeIpv6: Boolean = true,
+    ): TunnelDnsConfig {
         val host =
             resolveHost() ?: throw BackendException.ConfigMissingDNS("Host missing from upstream")
         val port = portFromUpstreamOrDefault()
@@ -40,13 +45,15 @@ data class TunnelDnsConfig(
                     else -> "$ip:$port"
                 }
         }
-        for (raw in ips.ipv6) {
-            val ip = raw.removePrefix("[").removeSuffix("]")
-            out +=
-                when (defaultTransport) {
-                    "doh" -> "https://[$ip]$path"
-                    else -> "[$ip]:$port"
-                }
+        if (includeIpv6) {
+            for (raw in ips.ipv6) {
+                val ip = raw.removePrefix("[").removeSuffix("]")
+                out +=
+                    when (defaultTransport) {
+                        "doh" -> "https://[$ip]$path"
+                        else -> "[$ip]:$port"
+                    }
+            }
         }
 
         return copy(upstream = out, serverName = serverName?.takeIf { it.isNotBlank() } ?: host)

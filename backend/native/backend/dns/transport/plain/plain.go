@@ -86,8 +86,10 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 	}
 
 	var lastErr error
-	for _, server := range t.Servers {
-		m, err := t.exchangeOne(ctx, msg, server)
+	for i, server := range t.Servers {
+		attemptCtx, cancel := transport.PerAttemptContext(ctx, len(t.Servers)-i)
+		m, err := t.exchangeOne(attemptCtx, msg, server)
+		cancel()
 		if err != nil {
 			log.Debug("PlainDNS", "server %s: %v", server, err)
 			lastErr = err

@@ -19,7 +19,12 @@ import (
 )
 
 const (
-	maxInFlightDNS   = 32
+	// maxInFlightDNS bounds concurrent resolutions to avoid unbounded goroutine connection growth under a malfunctioning client.
+	// We increase the headroom to 256 as a single busy multi-tab browsing session can easily fire well over 32 concurrent lookups.
+	maxInFlightDNS = 256
+	// dnsSemWait bounds how long a query waits for a free in-flight slot before
+	// giving up. Only matters once maxInFlightDNS is actually exhausted.
+	dnsSemWait       = 2 * time.Second
 	maxCacheEntries  = 512
 	dnsQueryTimeout  = 5 * time.Second
 	negativeCacheTTL = 10 * time.Second // used for SERVFAIL and NXDOMAIN responses
@@ -217,25 +222,31 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		}
 	}
 
-	select {
-	case f.dnsSem <- struct{}{}:
-	default:
-		log.Debug(tag, "dns: drop under load name=%s dest=%s", emptyName(qname, qok), p.DstIP)
-		return true
-	}
-
 	payload := make([]byte, len(p.Payload))
 	copy(payload, p.Payload)
 	orig := *p
 	orig.Payload = payload
 
+	// Never block the synchronous packet dispatch/tunnel read path on the
+	// semaphore. Always launch the goroutine immediately, and do any
+	// waiting for a free in-flight slot inside it. Under overload
+	// reply with a fast SERVFAIL instead  of staying silent, so the client fails fast and retries
+	// rather than hanging on its own internal timeout.
 	go func() {
-		defer func() { <-f.dnsSem }()
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Error(tag, "dns: panic in resolveAndReply: %v", rec)
 			}
 		}()
+
+		select {
+		case f.dnsSem <- struct{}{}:
+			defer func() { <-f.dnsSem }()
+		case <-time.After(dnsSemWait):
+			log.Debug(tag, "dns: overload timeout, fast SERVFAIL name=%s dest=%s", emptyName(qname, qok), p.DstIP)
+			f.replyServfail(&orig)
+			return
+		}
 		f.resolveAndReply(&orig)
 	}()
 	return true
@@ -331,6 +342,21 @@ func minAnswerTTL(msg *dns.Msg) time.Duration {
 		return maxCacheTTL
 	}
 	return ttl
+}
+
+// replyServfail synthesizes and writes an immediate SERVFAIL for a query that
+// never got a chance to resolve and intentionally never touches cache.
+func (f *WrapperTUN) replyServfail(orig *parsedPacket) {
+	msg := new(dns.Msg)
+	if err := msg.Unpack(orig.Payload); err != nil {
+		return
+	}
+	if len(msg.Question) == 0 {
+		return
+	}
+	fail := new(dns.Msg)
+	fail.SetRcode(msg, dns.RcodeServerFailure)
+	f.writeDNSResponse(orig, fail, msg.Question[0].Name)
 }
 
 func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
@@ -457,12 +483,19 @@ func (f *WrapperTUN) writeDNSResponse(orig *parsedPacket, resp *dns.Msg, name st
 		return
 	}
 
+	// realTUN implementations that negotiate kernel offload require callers to reserve header
+	// space before the packet and pass a non-zero offset. Writing at offset 0 fails with "invalid offset"
+	// whenever offload is active. 16 bytes matches wireguard-go's ownMessageTransportOffsetContent.
+	const writeHeaderReserve = 16
+	buf := make([]byte, writeHeaderReserve+len(outPacket))
+	copy(buf[writeHeaderReserve:], outPacket)
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
 		return
 	}
-	if _, err := f.realTUN.Write([][]byte{outPacket}, 0); err != nil {
+	if _, err := f.realTUN.Write([][]byte{buf}, writeHeaderReserve); err != nil {
 		log.Error(tag, "dns: write %s len=%d mtu=%d: %v", name, len(outPacket), mtu, err)
 		return
 	}

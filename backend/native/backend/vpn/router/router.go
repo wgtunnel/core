@@ -73,13 +73,23 @@ func (c *Config) Clone() *Config {
 	return &c2
 }
 
-// HasDefaultRoute checks if tunnel is full tunnel
+// hasDefaultRoute checks if tunnel is full tunnel for the given family
 func (c *Config) hasDefaultRoute(v4 bool) bool {
 	if c == nil {
 		return false
 	}
+	hasRoute := false
 	for _, rt := range c.Routes {
 		if rt.Bits() == 0 && ((v4 && rt.Addr().Is4()) || (!v4 && rt.Addr().Is6())) {
+			hasRoute = true
+			break
+		}
+	}
+	if !hasRoute {
+		return false
+	}
+	for _, a := range c.TunnelAddrs {
+		if (v4 && a.Addr().Is4()) || (!v4 && a.Addr().Is6()) {
 			return true
 		}
 	}

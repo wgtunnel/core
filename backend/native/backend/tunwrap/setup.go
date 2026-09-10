@@ -65,7 +65,7 @@ func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport, dial DialContext
 		suffixTransport = tunnelTransport
 	}
 
-	router := dns.NewSimpleRouter(eng, finalTransport)
+	router := dns.NewSimpleRouter(eng, finalTransport, killSwitchGate(cfg))
 	if len(cfg.LocalSuffixes) > 0 {
 		router.AddRule(dns.Rule{
 			Domains:      append([]string(nil), cfg.LocalSuffixes...),

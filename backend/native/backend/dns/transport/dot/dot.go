@@ -70,15 +70,17 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 	}
 
 	var lastErr error
-	for _, server := range t.Servers {
+	for i, server := range t.Servers {
+		attemptCtx, cancel := transport.PerAttemptContext(ctx, len(t.Servers)-i)
 		var m *dns.Msg
 		var err error
 		if t.DialContext != nil {
-			m, err = t.exchangePooled(ctx, msg, server)
+			m, err = t.exchangePooled(attemptCtx, msg, server)
 		} else {
 			t.init()
-			m, _, err = t.client.ExchangeContext(ctx, msg, server)
+			m, _, err = t.client.ExchangeContext(attemptCtx, msg, server)
 		}
+		cancel()
 		if err != nil {
 			lastErr = err
 			continue

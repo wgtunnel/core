@@ -23,6 +23,9 @@ type TunnelDNSConfig struct {
 	ServerName       string   `json:"serverName"`
 	ForeignDNSPolicy string   `json:"foreignDnsPolicy"` // redirect | drop/block | allow
 	SplitMode        string   `json:"splitMode"`        // system | tunnel
+	// KillSwitchEnabled is a start-time snapshot used only on Android
+	// because Android does a full teardown on kill switch enabled
+	KillSwitchEnabled bool `json:"killSwitchEnabled"`
 }
 
 // ParseTunnelDNSConfig parses the TunnelDNSConfig from JSON string

@@ -73,8 +73,10 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 	}
 
 	var lastErr error
-	for _, rawURL := range t.URLs {
-		out, err := t.exchangeOne(ctx, wire, rawURL)
+	for i, rawURL := range t.URLs {
+		attemptCtx, cancel := transport.PerAttemptContext(ctx, len(t.URLs)-i)
+		out, err := t.exchangeOne(attemptCtx, wire, rawURL)
+		cancel()
 		if err != nil {
 			lastErr = err
 			continue

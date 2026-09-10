@@ -449,13 +449,24 @@ func (r *linuxRouter) replaceRouteIdempotent(link netlink.Link, rt netip.Prefix,
 	return netlink.RouteReplace(route)
 }
 
-// hasDefault returns true if config has default route for v4 (true) or v6 (false).
+// hasDefault returns true if config has a default route for v4 (true) or v6 (false)
+// and the tunnel interface actually has an address in that family.
 func hasDefault(c *router.Config, v4 bool) bool {
 	if c == nil {
 		return false
 	}
+	hasRoute := false
 	for _, rt := range c.Routes {
 		if rt.Bits() == 0 && ((v4 && rt.Addr().Is4()) || (!v4 && rt.Addr().Is6())) {
+			hasRoute = true
+			break
+		}
+	}
+	if !hasRoute {
+		return false
+	}
+	for _, a := range c.TunnelAddrs {
+		if (v4 && a.Addr().Is4()) || (!v4 && a.Addr().Is6()) {
 			return true
 		}
 	}
