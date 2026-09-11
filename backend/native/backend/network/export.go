@@ -48,8 +48,16 @@ func toDTO(info NetworkInfo) networkInfoDTO {
 		BSSID:         info.BSSID,
 		HasIPv4:       info.HasIPv4,
 		HasIPv6:       info.HasIPv6,
-		DNSServers:    info.DNSServers,
+		// Kotlin expects and array
+		DNSServers: nonNilStrings(info.DNSServers),
 	}
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func infoJSON(info NetworkInfo) string {
