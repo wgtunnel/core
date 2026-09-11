@@ -48,7 +48,7 @@ func (r *desktopResolver) RawExchange(ctx context.Context, _ int64, request []by
 	}
 	qname := ""
 	if len(msg.Question) > 0 {
-		qname = msg.Question[0].Name
+		qname = log.RedactName(msg.Question[0].Name)
 	}
 	log.Debug("LocalDNS", "query %s via underlay servers=%v ifIndex=%d", qname, servers, r.underlay.IfIndex())
 

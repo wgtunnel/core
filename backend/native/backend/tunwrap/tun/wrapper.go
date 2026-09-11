@@ -243,7 +243,7 @@ func (f *WrapperTUN) handleDNSIfNeeded(packet []byte) bool {
 		case f.dnsSem <- struct{}{}:
 			defer func() { <-f.dnsSem }()
 		case <-time.After(dnsSemWait):
-			log.Debug(tag, "dns: overload timeout, fast SERVFAIL name=%s dest=%s", emptyName(qname, qok), p.DstIP)
+			log.Debug(tag, "dns: overload timeout, fast SERVFAIL name=%s dest=%s", emptyName(log.RedactName(qname), qok), p.DstIP)
 			f.replyServfail(&orig)
 			return
 		}
@@ -356,7 +356,7 @@ func (f *WrapperTUN) replyServfail(orig *parsedPacket) {
 	}
 	fail := new(dns.Msg)
 	fail.SetRcode(msg, dns.RcodeServerFailure)
-	f.writeDNSResponse(orig, fail, msg.Question[0].Name)
+	f.writeDNSResponse(orig, fail, log.RedactName(msg.Question[0].Name))
 }
 
 func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
@@ -379,12 +379,13 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 
 	q := msg.Question[0]
 	key := cacheKey(q)
+	logName := log.RedactName(q.Name)
 
 	// Check cache first for fast path
 	if cached := f.cacheGet(q); cached != nil {
 		cached.Id = msg.Id
-		log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d (cache)", q.Name, cached.Rcode, len(cached.Answer))
-		f.writeDNSResponse(orig, cached, q.Name)
+		log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d (cache)", logName, cached.Rcode, len(cached.Answer))
+		f.writeDNSResponse(orig, cached, logName)
 		return
 	}
 
@@ -404,10 +405,10 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 
 			ttl := negativeCacheTTL
 			if local.IsNoHandleError(err) {
-				log.Debug(tag, "dns: reply name=%s rcode=SERVFAIL (local no handle)", q.Name)
+				log.Debug(tag, "dns: reply name=%s rcode=SERVFAIL (local no handle)", logName)
 				ttl = 30 * time.Second // give more breathing room when handle is missing
 			} else {
-				log.Error(tag, "dns: exchange name=%s err=%v → SERVFAIL", q.Name, err)
+				log.Error(tag, "dns: exchange name=%s err=%v → SERVFAIL", logName, err)
 			}
 
 			f.cachePut(q, fail, ttl)
@@ -423,17 +424,17 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 	})
 
 	if err != nil {
-		log.Error(tag, "dns: unexpected singleflight error for %s: %v", q.Name, err)
+		log.Error(tag, "dns: unexpected singleflight error for %s: %v", logName, err)
 		fail := new(dns.Msg)
 		fail.SetRcode(msg, dns.RcodeServerFailure)
-		f.writeDNSResponse(orig, fail, q.Name)
+		f.writeDNSResponse(orig, fail, logName)
 		return
 	}
 
 	resp := v.(*dns.Msg).Copy()
 	resp.Id = msg.Id
-	log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d", q.Name, resp.Rcode, len(resp.Answer))
-	f.writeDNSResponse(orig, resp, q.Name)
+	log.Debug(tag, "dns: reply name=%s rcode=%d answers=%d", logName, resp.Rcode, len(resp.Answer))
+	f.writeDNSResponse(orig, resp, logName)
 }
 
 func (f *WrapperTUN) writeDNSResponse(orig *parsedPacket, resp *dns.Msg, name string) {

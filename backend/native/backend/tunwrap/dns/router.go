@@ -61,40 +61,41 @@ func (r *SimpleRouter) Exchange(ctx context.Context, msg *dns.Msg) (*ExchangeRes
 
 	q := msg.Question[0]
 	name := normalizeDNSName(q.Name)
+	logName := log.RedactName(name)
 
 	for _, rule := range r.rules {
 		if !matchRule(rule, name, q.Qtype) {
 			continue
 		}
 		if rule.Transport == localTransportName && r.killSwitchActive() {
-			log.Debug(routerTag, "route name=%s to transport=%s (suffix rule): blocked by kill switch", name, rule.Transport)
+			log.Debug(routerTag, "route name=%s to transport=%s (suffix rule): blocked by kill switch", logName, rule.Transport)
 			return nil, ErrLocalBlockedByKillSwitch
 		}
 		t, ok := r.engine.GetTransport(rule.Transport)
 		if !ok {
 			return nil, fmt.Errorf("dns: transport %q not found", rule.Transport)
 		}
-		log.Debug(routerTag, "route name=%s to transport=%s (suffix rule)", name, rule.Transport)
+		log.Debug(routerTag, "route name=%s to transport=%s (suffix rule)", logName, rule.Transport)
 		resp, err := t.Exchange(ctx, msg)
 		if err != nil {
-			log.Error(routerTag, "exchange name=%s transport=%s (suffix rule): %v", name, rule.Transport, err)
+			log.Error(routerTag, "exchange name=%s transport=%s (suffix rule): %v", logName, rule.Transport, err)
 			return nil, err
 		}
 		return &ExchangeResult{Msg: resp, DisableCache: rule.DisableCache}, nil
 	}
 
 	if r.final == localTransportName && r.killSwitchActive() {
-		log.Debug(routerTag, "route name=%s to transport=%s (default): blocked by kill switch", name, r.final)
+		log.Debug(routerTag, "route name=%s to transport=%s (default): blocked by kill switch", logName, r.final)
 		return nil, ErrLocalBlockedByKillSwitch
 	}
 	t, ok := r.engine.GetTransport(r.final)
 	if !ok {
 		return nil, fmt.Errorf("dns: final transport %q not found", r.final)
 	}
-	log.Debug(routerTag, "route name=%s to transport=%s (default)", name, r.final)
+	log.Debug(routerTag, "route name=%s to transport=%s (default)", logName, r.final)
 	resp, err := t.Exchange(ctx, msg)
 	if err != nil {
-		log.Error(routerTag, "exchange name=%s transport=%s (default): %v", name, r.final, err)
+		log.Error(routerTag, "exchange name=%s transport=%s (default): %v", logName, r.final, err)
 		return nil, err
 	}
 

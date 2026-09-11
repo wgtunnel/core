@@ -83,11 +83,11 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 	}
 
 	if !errors.Is(err, ErrNotSupported) {
-		log.Error(tag, "raw exchange handle=%d name=%s: %v", handle, name, err)
+		log.Error(tag, "raw exchange handle=%d name=%s: %v", handle, log.RedactName(name), err)
 		return nil, fmt.Errorf("local: raw exchange: %w", err)
 	}
 
-	log.Debug(tag, "raw unsupported/empty, fallback lookup name=%s handle=%d", name, handle)
+	log.Debug(tag, "raw unsupported/empty, fallback lookup name=%s handle=%d", log.RedactName(name), handle)
 	return t.lookupFallback(ctx, resolver, handle, msg)
 }
 
