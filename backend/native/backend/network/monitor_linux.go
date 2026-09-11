@@ -217,7 +217,6 @@ func kernelChosenUnderlay(
 	if isTunnelIface(name) {
 		return NetworkInfo{}, errPhysicalDefaultHidden
 	}
-	log.Debug(tag, "kernel underlay family=%d iface=%s ifIndex=%d metric=%d", family, name, index, routes[0].Priority)
 	return networkInfoFromLinkIndex(ctx, wifiClient, index)
 }
 
@@ -454,7 +453,6 @@ func (m *linuxMonitor) refresh() {
 		} else {
 			info = fallback
 		}
-		log.Debug(tag, "tunnel owns default route; underlay %s ifIndex=%d type=%d", info.InterfaceName, info.IfIndex, info.Type)
 	} else if err != nil {
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
@@ -485,6 +483,8 @@ func (m *linuxMonitor) refresh() {
 		m.mu.Unlock()
 		return
 	}
+	log.Debug(tag, "underlay changed: %s ifIndex=%d type=%d to %s ifIndex=%d type=%d",
+		prev.InterfaceName, prev.IfIndex, prev.Type, info.InterfaceName, info.IfIndex, info.Type)
 
 	m.current = info
 	listeners := append([]func(NetworkInfo){}, m.listeners...)
