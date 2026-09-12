@@ -410,7 +410,8 @@ internal class TunnelRecovery(
                 }
             }
 
-            log.i { "IPv6 recovery watcher started for tunnel $tunnelId" }
+
+            log.d { "IPv6 recovery watcher started for tunnel $tunnelId" }
 
             while (isActive) {
                 val candidate = snapshots.first { isIpv6Recoverable(it) }
