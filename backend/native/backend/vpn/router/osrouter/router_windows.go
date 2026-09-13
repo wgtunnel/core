@@ -225,8 +225,6 @@ func (r *windowsRouter) Close() error {
 		r.notifyHandle = nil
 	}
 
-	r.cancel()
-
 	if r.prevConfig != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -235,7 +233,12 @@ func (r *windowsRouter) Close() error {
 		}
 	}
 
-	r.Set(nil)
+	// Should be a no-op, can prevent windows firewall from tearing down
+	if err := r.Set(nil); err != nil {
+		log.Error(tag, "clear router config on close: %v", err)
+	}
+
+	r.cancel()
 
 	log.Debug(tag, "Router closed")
 	return nil
