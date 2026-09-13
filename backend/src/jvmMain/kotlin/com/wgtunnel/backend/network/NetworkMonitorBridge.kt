@@ -31,7 +31,12 @@ data class NetworkInfoDto(
 
 object NetworkMonitorBridge {
     private val log = Logger.withTag("NetworkMonitor")
-    private val json = Json { ignoreUnknownKeys = true }
+    // coerceInputValues  so a stray null here can never permanently stick
+    // _info at its default NetworkInfoDto() by failing every subsequent decode silently
+    private val json = Json {
+        ignoreUnknownKeys = true
+        coerceInputValues = true
+    }
     private val _info = MutableStateFlow(NetworkInfoDto())
     val info: StateFlow<NetworkInfoDto> = _info.asStateFlow()
 
