@@ -189,10 +189,8 @@ func (r *windowsRouter) onNetworkChange(notificationType winipcfg.MibNotificatio
 
 	log.Debug(tag, "Network change detected, re-applying router config")
 	if r.prevConfig != nil {
-		// Call configureInterface directly
-		if err := r.configureInterface(r.prevConfig.Clone()); err != nil {
-			log.Error(tag, "Failed to reconfigure interface on network change: %v", err)
-		}
+		// Reverted: calling configureInterface directly here caused a feedback loop
+		_ = r.Set(r.prevConfig.Clone())
 	}
 }
 
