@@ -35,10 +35,20 @@ type WindowsFirewall struct {
 
 	iface string
 
-	luid              uint64
-	appID             string
-	killSwitchEnabled atomic.Bool
+	luid           uint64
+	appID          string
+	baseRulesAdded atomic.Bool
+
+	tunnelReqV4 atomic.Bool
+	tunnelReqV6 atomic.Bool
+	persistReq  atomic.Bool
+
 	persistKillSwitch atomic.Bool
+
+	blockedV4    atomic.Bool
+	blockedV6    atomic.Bool
+	blockRulesV4 []*wf.Rule
+	blockRulesV6 []*wf.Rule
 
 	tunRules        []*wf.Rule
 	localAddrRules  []*wf.Rule
@@ -196,11 +206,27 @@ func (f *WindowsFirewall) BypassTunnel(luid uint64, listenPort uint16) error {
 	return nil
 }
 
-func (f *WindowsFirewall) Enable() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.killSwitchEnabled.Load() {
-		log.Debug(tag, "Kill switch already active, skipping activation")
+// reconcile brings actual firewall enforcement in line with the active tunnel and kill switch requirements
+func (f *WindowsFirewall) reconcile() error {
+	persist := f.persistKillSwitch.Load()
+	wantV4 := f.tunnelReqV4.Load() || persist
+	wantV6 := f.tunnelReqV6.Load() || persist
+
+	if !wantV4 && !wantV6 {
+		if f.blockedV4.Load() {
+			if err := f.removeRules(f.blockRulesV4); err != nil {
+				log.Error(tag, "Failed to remove v4 block rules: %v", err)
+			}
+			f.blockRulesV4 = nil
+			f.blockedV4.Store(false)
+		}
+		if f.blockedV6.Load() {
+			if err := f.removeRules(f.blockRulesV6); err != nil {
+				log.Error(tag, "Failed to remove v6 block rules: %v", err)
+			}
+			f.blockRulesV6 = nil
+			f.blockedV6.Store(false)
+		}
 		return nil
 	}
 
@@ -208,36 +234,83 @@ func (f *WindowsFirewall) Enable() error {
 		return fmt.Errorf("ensure WFP session: %w", err)
 	}
 
-	if err := f.permitDaemon(weightDaemonTraffic); err != nil {
-		return fmt.Errorf("permitDaemon failed: %w", err)
-	}
-	if err := f.permitLoopback(weightDaemonTraffic); err != nil {
-		return fmt.Errorf("permitLoopback failed: %w", err)
-	}
-	if err := f.permitDHCPv4(weightKnownTraffic); err != nil {
-		return fmt.Errorf("permitDHCPv4 failed: %w", err)
-	}
-
-	if nettest.SupportsIPv6() {
-		if err := f.permitDHCPv6(weightKnownTraffic); err != nil {
-			return fmt.Errorf("permitDHCPv6 failed: %w", err)
+	if !f.baseRulesAdded.Load() {
+		if err := f.permitDaemon(weightDaemonTraffic); err != nil {
+			return fmt.Errorf("permitDaemon failed: %w", err)
+		}
+		if err := f.permitLoopback(weightDaemonTraffic); err != nil {
+			return fmt.Errorf("permitLoopback failed: %w", err)
+		}
+		if err := f.permitDHCPv4(weightKnownTraffic); err != nil {
+			return fmt.Errorf("permitDHCPv4 failed: %w", err)
 		}
 
-		if err := f.permitNDP(weightKnownTraffic); err != nil {
-			return fmt.Errorf("permitNDP failed: %w", err)
+		if nettest.SupportsIPv6() {
+			if err := f.permitDHCPv6(weightKnownTraffic); err != nil {
+				return fmt.Errorf("permitDHCPv6 failed: %w", err)
+			}
+
+			if err := f.permitNDP(weightKnownTraffic); err != nil {
+				return fmt.Errorf("permitNDP failed: %w", err)
+			}
 		}
+
+		f.baseRulesAdded.Store(true)
 	}
 
-	if err := f.blockAll(weightCatchAll); err != nil {
-		return fmt.Errorf("blockAll failed: %w", err)
+	if wantV4 && !f.blockedV4.Load() {
+		rules, err := f.addRules("all", weightCatchAll, nil, wf.ActionBlock, protocolV4, directionBoth)
+		if err != nil {
+			return fmt.Errorf("blockAll v4 failed: %w", err)
+		}
+		f.blockRulesV4 = rules
+		f.blockedV4.Store(true)
+	} else if !wantV4 && f.blockedV4.Load() {
+		if err := f.removeRules(f.blockRulesV4); err != nil {
+			log.Error(tag, "Failed to remove v4 block rules: %v", err)
+		}
+		f.blockRulesV4 = nil
+		f.blockedV4.Store(false)
 	}
 
-	f.killSwitchEnabled.Store(true)
+	if wantV6 && !f.blockedV6.Load() {
+		rules, err := f.addRules("all", weightCatchAll, nil, wf.ActionBlock, protocolV6, directionBoth)
+		if err != nil {
+			return fmt.Errorf("blockAll v6 failed: %w", err)
+		}
+		f.blockRulesV6 = rules
+		f.blockedV6.Store(true)
+	} else if !wantV6 && f.blockedV6.Load() {
+		if err := f.removeRules(f.blockRulesV6); err != nil {
+			log.Error(tag, "Failed to remove v6 block rules: %v", err)
+		}
+		f.blockRulesV6 = nil
+		f.blockedV6.Store(false)
+	}
+
 	return nil
 }
 
+// SetTunnelRequirement declares what the active tunnel's own config currently needs.
+func (f *WindowsFirewall) SetTunnelRequirement(v4, v6 bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tunnelReqV4.Store(v4)
+	f.tunnelReqV6.Store(v6)
+	return f.reconcile()
+}
+
+// SetIndependentLockdown turns the manual kill switch on/off. Turning it off releases a
+// family only if the active tunnel doesn't also require it.
+func (f *WindowsFirewall) SetIndependentLockdown(enabled bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.persistKillSwitch.Store(enabled)
+	return f.reconcile()
+}
+
 func (f *WindowsFirewall) IsEnabled() bool {
-	return f.killSwitchEnabled.Load()
+	return f.blockedV4.Load() || f.blockedV6.Load()
 }
 
 func (f *WindowsFirewall) cacheAppID() error {
@@ -386,7 +459,14 @@ func (f *WindowsFirewall) Disable() error {
 		f.session = nil
 	}
 
-	f.killSwitchEnabled.Store(false)
+	f.blockedV4.Store(false)
+	f.blockedV6.Store(false)
+	f.blockRulesV4 = nil
+	f.blockRulesV6 = nil
+	f.baseRulesAdded.Store(false)
+	f.tunnelReqV4.Store(false)
+	f.tunnelReqV6.Store(false)
+	f.persistKillSwitch.Store(false)
 	log.Debug(tag, "Firewall fully disabled and session closed")
 	return nil
 }
@@ -666,11 +746,6 @@ func (f *WindowsFirewall) permitNDP(w weight) error {
 		return err
 	}
 	return nil
-}
-
-func (f *WindowsFirewall) blockAll(w weight) error {
-	_, err := f.addRules("all", w, nil, wf.ActionBlock, protocolAll, directionBoth)
-	return err
 }
 
 // addRules adds WFP rules with the given parameters

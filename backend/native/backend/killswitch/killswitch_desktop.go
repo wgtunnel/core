@@ -25,14 +25,16 @@ func setKillSwitch(enabled C.int) C.int {
 		return -1
 	}
 	if enabled == 1 {
-		fw.SetPersist(true)
-		if err := fw.Enable(); err != nil {
+		// SetIndependentLockdown sets the persist flag itself.
+		if err := fw.SetIndependentLockdown(true); err != nil {
 			log.Error(tag, "Failed to enable kill switch: %v", err)
 			return -1
 		}
 		log.Debug(tag, "Kill switch enabled")
 	} else {
-		if err := fw.Disable(); err != nil {
+		// Releases enforcement for any family the active tunnel doesn't independently
+		// require, and clears the persist flag
+		if err := fw.SetIndependentLockdown(false); err != nil {
 			log.Error(tag, "Failed to disable kill switch: %v", err)
 			return -1
 		}

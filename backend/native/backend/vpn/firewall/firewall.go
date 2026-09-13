@@ -8,17 +8,25 @@ type Firewall interface {
 	// SetPersist sets whether the kill switch should persist tunnel down
 	SetPersist(enabled bool)
 
-	// Enable activates the kill switch, blocking all outbound traffic except
-	// explicitly allowed bypasses. Persist will keep the firewall active
-	Enable() error
+	// SetTunnelRequirement declares which address families the currently active tunnel's
+	// own config requires full-tunnel kill-switch protection for.
+	SetTunnelRequirement(v4, v6 bool) error
 
-	// IsEnabled reports whether the kill switch is currently active.
+	// SetIndependentLockdown turns the manual/persistent kill switch on (blocking both
+	// families) or off. Turning it off releases a family only if the active tunnel's own
+	// SetTunnelRequirement doesn't also require it.
+	SetIndependentLockdown(enabled bool) error
+
+	// IsEnabled reports whether the kill switch is currently active (any family blocked,
+	// for any reason).
 	IsEnabled() bool
 
 	// IsPersistent whether the kill switch was enabled to persist tunnel changes
 	IsPersistent() bool
 
-	// Disable deactivates the kill switch and cleans up all rules.
+	// Disable is a hard reset. It deactivates the kill switch unconditionally and cleans up
+	// all rules and internal requirement state, ignoring any active tunnel's requirement.
+	// Intended for defensive cleanup.
 	Disable() error
 
 	// AllowLocalNetworks adds bypass rules for the specified local network prefixes. Requires kill switch enabled and

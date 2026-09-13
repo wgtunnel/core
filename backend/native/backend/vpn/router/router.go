@@ -99,3 +99,13 @@ func (c *Config) hasDefaultRoute(v4 bool) bool {
 func (c *Config) HasAnyDefaultRoute() bool {
 	return c.hasDefaultRoute(true) || c.hasDefaultRoute(false)
 }
+
+// HasDefaultRouteV4 reports whether this Config is a full tunnel for IPv4 specifically.
+func (c *Config) HasDefaultRouteV4() bool {
+	return c.hasDefaultRoute(true)
+}
+
+// HasDefaultRouteV6 is the IPv6 counterpart of HasDefaultRouteV4.
+func (c *Config) HasDefaultRouteV6() bool {
+	return c.hasDefaultRoute(false)
+}

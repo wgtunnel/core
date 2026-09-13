@@ -118,7 +118,7 @@ func (r *windowsRouter) Set(c *router.Config) error {
 		}
 	}
 
-	if err := r.syncFirewallState(newC, isNewFull); err != nil {
+	if err := r.syncFirewallState(newC, newC.HasDefaultRouteV4(), newC.HasDefaultRouteV6()); err != nil {
 		return err
 	}
 
@@ -130,32 +130,28 @@ func (r *windowsRouter) Set(c *router.Config) error {
 	return nil
 }
 
-func (r *windowsRouter) syncFirewallState(newC *router.Config, requiresKS bool) error {
+func (r *windowsRouter) syncFirewallState(newC *router.Config, requiresKSv4, requiresKSv6 bool) error {
+	requiresKS := requiresKSv4 || requiresKSv6
 
 	if !requiresKS && !r.fw.IsEnabled() {
 		// not full tun and independent ks is not enabled, do nothing
 		return nil
 	} else if newC.Equal(&router.Config{}) && r.fw.IsEnabled() {
-		// tunnel down: cleanup
-		if r.fw.IsPersistent() {
-			if err := r.fw.RemoveTunnelRules(); err != nil {
-				return fmt.Errorf("remove tunnel bypasses: %w", err)
-			}
-		} else {
-			if err := r.fw.Disable(); err != nil {
-				return fmt.Errorf("disable firewall: %w", err)
-			}
+		if err := r.fw.RemoveTunnelRules(); err != nil {
+			return fmt.Errorf("remove tunnel bypasses: %w", err)
+		}
+		if err := r.fw.SetTunnelRequirement(false, false); err != nil {
+			return fmt.Errorf("release tunnel kill-switch requirement: %w", err)
 		}
 		return nil
 	}
 
-	// enable kill switch for full tun when it isn't already enabled independently
 	if requiresKS && !r.fw.IsEnabled() {
 		// set persist to false as this kill switch is only required for this tun
 		r.fw.SetPersist(false)
-		if err := r.fw.Enable(); err != nil {
-			return fmt.Errorf("enable firewall: %w", err)
-		}
+	}
+	if err := r.fw.SetTunnelRequirement(requiresKSv4, requiresKSv6); err != nil {
+		return fmt.Errorf("sync firewall tunnel requirement: %w", err)
 	}
 
 	// If kill switch is active (independent or just enabled), always add tunnel bypasses
@@ -193,8 +189,10 @@ func (r *windowsRouter) onNetworkChange(notificationType winipcfg.MibNotificatio
 
 	log.Debug(tag, "Network change detected, re-applying router config")
 	if r.prevConfig != nil {
-		// Set will recheck the physical gateway and add the protected peer endpoint routes
-		_ = r.Set(r.prevConfig.Clone())
+		// Call configureInterface directly
+		if err := r.configureInterface(r.prevConfig.Clone()); err != nil {
+			log.Error(tag, "Failed to reconfigure interface on network change: %v", err)
+		}
 	}
 }
 

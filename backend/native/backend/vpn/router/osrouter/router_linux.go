@@ -141,11 +141,10 @@ func (r *linuxRouter) Close() error {
 	r.deleteBootstrapPolicyRules(netlink.FAMILY_V6)
 
 	if r.fw.IsEnabled() {
-		if r.fw.IsPersistent() {
-			_ = r.fw.RemoveTunnelBypasses(r.iface)
-		} else {
-			_ = r.fw.Disable()
-		}
+		// This only releases enforcement not also required
+		// by independent lockdown or another active tunnel sharing this firewall instance.
+		_ = r.fw.RemoveTunnelBypasses(r.iface)
+		_ = r.fw.SetTunnelRequirement(false, false)
 	}
 	log.Debug(tag, "Router closed")
 	return nil
@@ -260,33 +259,30 @@ func (r *linuxRouter) updatePrevState(newC *router.Config) {
 }
 
 func (r *linuxRouter) syncFirewallState(newC *router.Config) error {
-	requiresKS := newC.HasAnyDefaultRoute()
+	requiresKSv4 := newC.HasDefaultRouteV4()
+	requiresKSv6 := newC.HasDefaultRouteV6()
+	requiresKS := requiresKSv4 || requiresKSv6
 
 	if !requiresKS && !r.fw.IsEnabled() {
 		// not full tun and independent ks is not enabled, do nothing
 		return nil
 		// handle cleanup
 	} else if newC.Equal(&router.Config{}) && r.fw.IsEnabled() {
-		// independent fw, just remove the rules
-		if r.fw.IsPersistent() {
-			if err := r.fw.RemoveTunnelBypasses(r.iface); err != nil {
-				return fmt.Errorf("remove tunnel bypasses: %w", err)
-			}
-		} else {
-			if err := r.fw.Disable(); err != nil {
-				return fmt.Errorf("disable firewall: %w", err)
-			}
+		if err := r.fw.RemoveTunnelBypasses(r.iface); err != nil {
+			return fmt.Errorf("remove tunnel bypasses: %w", err)
+		}
+		if err := r.fw.SetTunnelRequirement(false, false); err != nil {
+			return fmt.Errorf("release tunnel kill-switch requirement: %w", err)
 		}
 		return nil
 	}
 
-	// enable kill switch for full tun when it isn't already enabled independently
 	if requiresKS && !r.fw.IsEnabled() {
 		// set persist to false as this kill switch is only required for this tun
 		r.fw.SetPersist(false)
-		if err := r.fw.Enable(); err != nil {
-			return fmt.Errorf("enable firewall: %w", err)
-		}
+	}
+	if err := r.fw.SetTunnelRequirement(requiresKSv4, requiresKSv6); err != nil {
+		return fmt.Errorf("sync firewall tunnel requirement: %w", err)
 	}
 
 	// kill switch is active, set our bypass rules for tun

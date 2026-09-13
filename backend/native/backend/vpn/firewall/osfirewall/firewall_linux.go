@@ -57,8 +57,14 @@ type LinuxFirewall struct {
 
 	tunnelPort uint16
 
-	killSwitchEnabled atomic.Bool
+	tunnelReqV4       atomic.Bool
+	tunnelReqV6       atomic.Bool
 	persistKillSwitch atomic.Bool
+
+	blockedV4    atomic.Bool
+	blockedV6    atomic.Bool
+	blockRulesV4 []*nftables.Rule
+	blockRulesV6 []*nftables.Rule
 
 	localAddrRules []*nftables.Rule            // For tracking AllowedLocalNetworks rules
 	tunnelRules    map[string][]*nftables.Rule // For tracking iface tunnel bypass rules
@@ -257,7 +263,13 @@ func (f *LinuxFirewall) Disable() error {
 		f.nft6.Filter, f.nft6.Nat = nil, nil
 	}
 
-	f.killSwitchEnabled.Store(false)
+	f.blockedV4.Store(false)
+	f.blockedV6.Store(false)
+	f.blockRulesV4 = nil
+	f.blockRulesV6 = nil
+	f.tunnelReqV4.Store(false)
+	f.tunnelReqV6.Store(false)
+	f.persistKillSwitch.Store(false)
 
 	log.Debug(tag, "Firewall cleaned up and kill switch disabled")
 	return nil
@@ -331,7 +343,7 @@ func (f *LinuxFirewall) IsAllowLocalNetworksEnabled() bool {
 }
 
 func (f *LinuxFirewall) IsEnabled() bool {
-	return f.killSwitchEnabled.Load()
+	return f.blockedV4.Load() || f.blockedV6.Load()
 }
 
 type nftable struct {
@@ -555,12 +567,29 @@ func deleteChainIfExists(c *nftables.Conn, table *nftables.Table, name string) e
 	return nil
 }
 
-// getTables returns v4/v6 tables based on system support.
+// getTables returns the tables currently under kill-switch enforcement.
 func (f *LinuxFirewall) getTables() []*nftable {
-	if f.v6Available {
-		return []*nftable{f.nft4, f.nft6}
+	var tables []*nftable
+	if f.blockedV4.Load() {
+		tables = append(tables, f.nft4)
 	}
-	return []*nftable{f.nft4}
+	if f.blockedV6.Load() && f.nft6 != nil {
+		tables = append(tables, f.nft6)
+	}
+	return tables
+}
+
+// tablesToEnable returns the tables that need to be newly created for this reconcile pass -
+// i.e. wanted families that aren't already under enforcement.
+func (f *LinuxFirewall) tablesToEnable(wantV4, wantV6 bool) []*nftable {
+	var tables []*nftable
+	if wantV4 && !f.blockedV4.Load() {
+		tables = append(tables, f.nft4)
+	}
+	if wantV6 && f.v6Available && !f.blockedV6.Load() {
+		tables = append(tables, f.nft6)
+	}
+	return tables
 }
 
 // getNFTByAddr selects v4/v6 table by addr family.
@@ -601,9 +630,21 @@ func findRule(conn *nftables.Conn, rule *nftables.Rule) (*nftables.Rule, error) 
 	return nil, nil
 }
 
-func (f *LinuxFirewall) Enable() error {
-	if f.IsEnabled() {
-		log.Debug(tag, "Kill switch already active, skipping activation")
+// reconcile brings actual nftables enforcement in line with the active tunnel and kill switch requirements
+func (f *LinuxFirewall) reconcile() error {
+	persist := f.persistKillSwitch.Load()
+	wantV4 := f.tunnelReqV4.Load() || persist
+	wantV6 := f.tunnelReqV6.Load() || persist
+
+	if !wantV4 && f.blockedV4.Load() {
+		f.releaseFamily(nftables.TableFamilyIPv4)
+	}
+	if !wantV6 && f.blockedV6.Load() {
+		f.releaseFamily(nftables.TableFamilyIPv6)
+	}
+
+	tables := f.tablesToEnable(wantV4, wantV6)
+	if len(tables) == 0 {
 		return nil
 	}
 
@@ -612,7 +653,7 @@ func (f *LinuxFirewall) Enable() error {
 	}
 
 	polAccept := nftables.ChainPolicyAccept
-	for _, table := range f.getTables() {
+	for _, table := range tables {
 		t, err := createTableIfNotExist(f.conn, table.Proto, tableName)
 		if err != nil {
 			return fmt.Errorf("create %s table: %w", tableName, err)
@@ -640,12 +681,58 @@ func (f *LinuxFirewall) Enable() error {
 		return fmt.Errorf("flush after chain creation: %w", err)
 	}
 
-	if err := f.addKillSwitchRules(); err != nil {
+	dropRules, err := f.addKillSwitchRules(tables)
+	if err != nil {
 		return fmt.Errorf("add kill switch rules: %w", err)
 	}
 
-	f.killSwitchEnabled.Store(true)
+	for _, table := range tables {
+		if table.Proto == nftables.TableFamilyIPv4 {
+			f.blockRulesV4 = dropRules[table.Proto]
+			f.blockedV4.Store(true)
+		} else {
+			f.blockRulesV6 = dropRules[table.Proto]
+			f.blockedV6.Store(true)
+		}
+	}
 	return nil
+}
+
+// releaseFamily removes just that family's DROP rules
+func (f *LinuxFirewall) releaseFamily(family nftables.TableFamily) {
+	rules := f.blockRulesV4
+	if family == nftables.TableFamilyIPv6 {
+		rules = f.blockRulesV6
+	}
+	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		if err := f.conn.DelRule(rule); err != nil {
+			log.Error(tag, "Failed to remove drop rule for %v: %v", family, err)
+		}
+	}
+	if err := f.conn.Flush(); err != nil {
+		log.Error(tag, "Flush after releasing %v kill switch: %v", family, err)
+	}
+	if family == nftables.TableFamilyIPv4 {
+		f.blockRulesV4 = nil
+		f.blockedV4.Store(false)
+	} else {
+		f.blockRulesV6 = nil
+		f.blockedV6.Store(false)
+	}
+}
+
+func (f *LinuxFirewall) SetTunnelRequirement(v4, v6 bool) error {
+	f.tunnelReqV4.Store(v4)
+	f.tunnelReqV6.Store(v6)
+	return f.reconcile()
+}
+
+func (f *LinuxFirewall) SetIndependentLockdown(enabled bool) error {
+	f.persistKillSwitch.Store(enabled)
+	return f.reconcile()
 }
 
 // createHookRule creates a jump rule.
@@ -663,63 +750,75 @@ func createHookRule(table *nftables.Table, fromChain *nftables.Chain, toChainNam
 	}
 }
 
-// addKillSwitchRules adds bypass for fwmark and DROP at end (private helper).
-func (f *LinuxFirewall) addKillSwitchRules() error {
+// addKillSwitchRules adds bypass for fwmark and DROP at end (private helper). tables is
+// the specific set being newly enabled, not necessarily every currently-enforced table.
+// Returns each table's input and output DROP rule handles, keyed by family, so a later
+// releaseFamily call can remove just those without touching the rest of the table.
+func (f *LinuxFirewall) addKillSwitchRules(tables []*nftable) (map[nftables.TableFamily][]*nftables.Rule, error) {
 	log.Debug(tag, "Adding kill switch rules...")
 
-	for _, table := range f.getTables() {
+	dropRules := make(map[nftables.TableFamily][]*nftables.Rule)
+
+	for _, table := range tables {
 
 		inputChain, err := getChainFromTable(f.conn, table.Filter, chainNameInput)
 		if err != nil {
-			return fmt.Errorf("get input chain: %w", err)
+			return nil, fmt.Errorf("get input chain: %w", err)
 		}
 
 		// allow loopback
 		if err := f.addLoopbackRule(table.Filter, inputChain); err != nil {
-			return err
+			return nil, err
 		}
 
 		// allow Established/Related traffic for reply
 		if err := f.addEstablishedRule(table.Filter, inputChain); err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := f.addVirtIfaceAccept(table.Filter, inputChain); err != nil {
-			return err
+			return nil, err
 		}
 
 		// drop everything else
-		dropRule := createDropRule(table.Filter, inputChain)
-		f.conn.AddRule(dropRule)
+		inputDrop := f.conn.AddRule(createDropRule(table.Filter, inputChain))
 
 		outputChain, err := getChainFromTable(f.conn, table.Filter, chainNameOutput)
 		if err != nil {
-			return fmt.Errorf("get output chain: %w", err)
+			return nil, fmt.Errorf("get output chain: %w", err)
 		}
 
 		// allow loopback on output
 		if err := f.addLoopbackRule(table.Filter, outputChain); err != nil {
-			return err
+			return nil, err
 		}
 
-		// allow the marked tunnel traffic
+		// allow the marked tunnel traffic and guard against duplicating this on a
+		// release-then-re-enable cycle for the same family
 		bypassRule := createFwmarkRule(table.Filter, outputChain, mark.LinuxBypassMarkNum)
-		f.conn.InsertRule(bypassRule)
+		existingBypass, err := findRule(f.conn, bypassRule)
+		if err != nil {
+			return nil, fmt.Errorf("find kill-switch fwmark bypass rule: %w", err)
+		}
+		if existingBypass == nil {
+			f.conn.InsertRule(bypassRule)
+		}
 
 		if err := f.addVirtIfaceAccept(table.Filter, outputChain); err != nil {
-			return err
+			return nil, err
 		}
 
 		// drop everything else
-		dropRule = createDropRule(table.Filter, outputChain)
-		f.conn.AddRule(dropRule)
+		outputDrop := f.conn.AddRule(createDropRule(table.Filter, outputChain))
+
+		dropRules[table.Proto] = []*nftables.Rule{inputDrop, outputDrop}
 	}
 
 	if err := f.conn.Flush(); err != nil {
-		return fmt.Errorf("flush after adding kill switch: %w", err)
+		return nil, fmt.Errorf("flush after adding kill switch: %w", err)
 	}
 	log.Debug(tag, "Kill switch rules added.")
-	return nil
+	return dropRules, nil
 }
 
 // addTunnelInterfaceRule adds a rule to let our tun interface escape firewall
@@ -749,7 +848,16 @@ func (f *LinuxFirewall) addVirtIfaceAccept(table *nftables.Table, chain *nftable
 				&expr.Verdict{Kind: expr.VerdictAccept},
 			},
 		}
-		f.conn.InsertRule(rule)
+		// A prior enable of this family may not have been fully undone by releaseFamily
+		// (which only removes the DROP rules), so guard against re-adding a duplicate on
+		// a later re-enable.
+		existing, err := findRule(f.conn, rule)
+		if err != nil {
+			return fmt.Errorf("find virt iface accept rule: %w", err)
+		}
+		if existing == nil {
+			f.conn.InsertRule(rule)
+		}
 	}
 	return nil
 }
@@ -773,7 +881,13 @@ func (f *LinuxFirewall) addLoopbackRule(table *nftables.Table, chain *nftables.C
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	}
-	f.conn.InsertRule(loRule)
+	existing, err := findRule(f.conn, loRule)
+	if err != nil {
+		return fmt.Errorf("find loopback rule: %w", err)
+	}
+	if existing == nil {
+		f.conn.InsertRule(loRule)
+	}
 	return nil
 }
 
@@ -813,7 +927,13 @@ func (f *LinuxFirewall) addEstablishedRule(table *nftables.Table, chain *nftable
 		},
 	}
 
-	f.conn.InsertRule(rule)
+	existing, err := findRule(f.conn, rule)
+	if err != nil {
+		return fmt.Errorf("find established rule: %w", err)
+	}
+	if existing == nil {
+		f.conn.InsertRule(rule)
+	}
 	return nil
 }
 
