@@ -105,7 +105,7 @@ func (t *Transport) exchangePooled(ctx context.Context, msg *dns.Msg, server str
 		return nil, err
 	}
 
-	m, err := t.exchangeOnConn(conn, msg)
+	m, err := t.exchangeOnConn(ctx, conn, msg)
 	if err != nil {
 		_ = conn.Close()
 		// A pooled connection may have been closed/idled-out by the server
@@ -117,7 +117,7 @@ func (t *Transport) exchangePooled(ctx context.Context, msg *dns.Msg, server str
 			if dialErr != nil {
 				return nil, err
 			}
-			m, err = t.exchangeOnConn(conn, msg)
+			m, err = t.exchangeOnConn(ctx, conn, msg)
 			if err != nil {
 				_ = conn.Close()
 				return nil, err
@@ -132,11 +132,30 @@ func (t *Transport) exchangePooled(ctx context.Context, msg *dns.Msg, server str
 	return m, nil
 }
 
-func (t *Transport) exchangeOnConn(conn *dns.Conn, msg *dns.Msg) (*dns.Msg, error) {
+// exchangeOnConn honors ctx in addition to the transport's own Timeout, so a
+// caller that times out or cancels early isn't left blocked on this connection's I/O
+// for up to the full t.Timeout regardless of what the caller actually asked
+func (t *Transport) exchangeOnConn(ctx context.Context, conn *dns.Conn, msg *dns.Msg) (*dns.Msg, error) {
 	deadline := time.Now().Add(t.Timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Unblocks WriteMsg/ReadMsg immediately instead of waiting out
+			// the socket deadline as the caller has already given up.
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+
 	if err := conn.WriteMsg(msg); err != nil {
 		return nil, err
 	}
