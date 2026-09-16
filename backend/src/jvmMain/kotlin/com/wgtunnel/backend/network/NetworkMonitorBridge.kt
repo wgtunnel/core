@@ -17,6 +17,7 @@ data class NetworkInfoDto(
     val hasIpv4: Boolean = false,
     val hasIpv6: Boolean = false,
     val dnsServers: List<String> = emptyList(),
+    val locationPermissionDenied: Boolean = false,
 ) {
     val isConnected: Boolean
         get() = type != "disconnected" && type.isNotBlank()

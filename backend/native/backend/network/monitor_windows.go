@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	debounceInterval = 200 * time.Millisecond
-	tag              = "NetworkMonitor"
+	debounceInterval      = 200 * time.Millisecond
+	locationRetryInterval = 2 * time.Second
+	tag                   = "NetworkMonitor"
 )
 
 type windowsMonitor struct {
@@ -122,6 +123,8 @@ func (m *windowsMonitor) pingRefresh() {
 
 func (m *windowsMonitor) loop() {
 	deb := util.NewDebouncer(debounceInterval)
+	ticker := time.NewTicker(locationRetryInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-m.stopCh:
@@ -132,6 +135,13 @@ func (m *windowsMonitor) loop() {
 		case <-deb.C:
 			deb.Fired()
 			m.refresh()
+		case <-ticker.C:
+			m.mu.RLock()
+			denied := m.current.LocationPermissionDenied
+			m.mu.RUnlock()
+			if denied {
+				m.refresh()
+			}
 		}
 	}
 }
@@ -157,24 +167,26 @@ func (m *windowsMonitor) refresh() {
 		return
 	}
 
+	m.mu.RLock()
+	prev := m.current
+	m.mu.RUnlock()
+
 	info, err := underlayFromDefaultRoute(m.ctx)
 	if errors.Is(err, errPhysicalDefaultHidden) {
-		m.mu.RLock()
-		prev := m.current
-		m.mu.RUnlock()
-		if prev.HasUsableUnderlay() {
-			info = prev
-			log.Debug(tag, "keeping physical underlay %s ifIndex=%d (tunnel owns default route)", info.InterfaceName, info.IfIndex)
-		} else {
+		fallback, ferr := bestPhysicalUnderlay(m.ctx, prev)
+		if ferr != nil {
 			info = NetworkInfo{Type: NetworkDisconnected}
+		} else {
+			info = fallback
 		}
 	} else if err != nil {
 		log.Debug(tag, "underlay refresh: %v", err)
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
 
+	info.LocationPermissionDenied = wifiSSIDLocationDenied()
+
 	m.mu.Lock()
-	prev := m.current
 
 	// Last known DNS on same underlay
 	if info.IfIndex != 0 &&
@@ -184,12 +196,15 @@ func (m *windowsMonitor) refresh() {
 		info.DNSServers = append([]string(nil), prev.DNSServers...)
 	}
 
-	// Keep last good SSID/BSSID
-	if info.IfIndex != 0 && info.IfIndex == prev.IfIndex && info.Type == NetworkWifi {
-		if info.SSID == "" && prev.SSID != "" {
+	// Keep last good SSID/BSSID if this refresh only got placeholders while
+	// still on the same associated Wi-Fi underlay (WlanQueryInterface miss).
+	// Do not restore names when location consent is blocking the read.
+	if !info.LocationPermissionDenied &&
+		info.IfIndex != 0 && info.IfIndex == prev.IfIndex && info.Type == NetworkWifi {
+		if info.SSID == UnknownSSID && prev.SSID != "" && prev.SSID != UnknownSSID {
 			info.SSID = prev.SSID
 		}
-		if info.BSSID == "" && prev.BSSID != "" {
+		if info.BSSID == UnknownBSSID && prev.BSSID != "" && prev.BSSID != UnknownBSSID {
 			info.BSSID = prev.BSSID
 		}
 	}
@@ -198,6 +213,8 @@ func (m *windowsMonitor) refresh() {
 		m.mu.Unlock()
 		return
 	}
+	log.Debug(tag, "underlay changed: %s ifIndex=%d type=%d to %s ifIndex=%d type=%d ssid=%s",
+		prev.InterfaceName, prev.IfIndex, prev.Type, info.InterfaceName, info.IfIndex, info.Type, info.SSID)
 
 	m.current = info
 	listeners := append([]func(NetworkInfo){}, m.listeners...)
@@ -208,42 +225,10 @@ func (m *windowsMonitor) refresh() {
 	}
 }
 
+// underlayFromDefaultRoute enumerate adapters, keep only OperStatus-Up physical NICs, then pick the
+// IPv4 default route with the lowest (route metric + interface Ipv4Metric).
+// Down Wi-Fi NICs drop out here even if a stale 0.0.0.0/0 remains.
 func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
-	rows, err := winipcfg.GetIPForwardTable2(windows.AF_INET)
-	if err != nil {
-		return NetworkInfo{}, fmt.Errorf("forward table: %w", err)
-	}
-
-	var best *winipcfg.MibIPforwardRow2
-	var bestMetric uint32 = ^uint32(0)
-	sawTunDefault := false
-
-	for i := range rows {
-		r := &rows[i]
-		pref := r.DestinationPrefix.Prefix()
-		if !pref.IsValid() || !pref.Addr().Is4() || pref.Bits() != 0 {
-			continue
-		}
-		if isTunnelLUID(r.InterfaceLUID) {
-			sawTunDefault = true
-			continue
-		}
-		if r.Metric < bestMetric {
-			bestMetric = r.Metric
-			best = r
-		}
-	}
-
-	if best == nil {
-		if sawTunDefault {
-			return NetworkInfo{}, errPhysicalDefaultHidden
-		}
-		return NetworkInfo{Type: NetworkDisconnected}, nil
-	}
-	return networkInfoFromLUID(ctx, best.InterfaceLUID, best.InterfaceIndex)
-}
-
-func networkInfoFromLUID(ctx context.Context, luid winipcfg.LUID, ifIndex uint32) (NetworkInfo, error) {
 	addrs, err := winipcfg.GetAdaptersAddresses(
 		windows.AF_UNSPEC,
 		winipcfg.GAAFlagIncludeAllInterfaces,
@@ -252,17 +237,177 @@ func networkInfoFromLUID(ctx context.Context, luid winipcfg.LUID, ifIndex uint32
 		return NetworkInfo{}, err
 	}
 
-	var a *winipcfg.IPAdapterAddresses
-	for _, x := range addrs {
-		if x.LUID == luid || (ifIndex != 0 && x.IfIndex == ifIndex) {
-			a = x
-			break
+	viable := make(map[winipcfg.LUID]*winipcfg.IPAdapterAddresses, len(addrs))
+	tunnelLUIDs := make(map[winipcfg.LUID]struct{})
+	for _, a := range addrs {
+		if isTunnelAdapter(a) {
+			tunnelLUIDs[a.LUID] = struct{}{}
+			continue
 		}
+		if !adapterViable(a) {
+			continue
+		}
+		viable[a.LUID] = a
 	}
-	if a == nil {
+
+	rows, err := winipcfg.GetIPForwardTable2(windows.AF_INET)
+	if err != nil {
+		return NetworkInfo{}, fmt.Errorf("forward table: %w", err)
+	}
+
+	type candidate struct {
+		adapter *winipcfg.IPAdapterAddresses
+		metric  uint32
+	}
+	var cands []candidate
+	sawTunDefault := false
+
+	for i := range rows {
+		r := &rows[i]
+		if r.Loopback || r.DestinationPrefix.PrefixLength != 0 {
+			continue
+		}
+		if _, tun := tunnelLUIDs[r.InterfaceLUID]; tun {
+			sawTunDefault = true
+			continue
+		}
+		a := viable[r.InterfaceLUID]
+		if a == nil {
+			continue
+		}
+		cands = append(cands, candidate{
+			adapter: a,
+			metric:  r.Metric + a.Ipv4Metric,
+		})
+	}
+
+	if len(cands) == 0 {
+		if sawTunDefault {
+			return NetworkInfo{}, errPhysicalDefaultHidden
+		}
 		return NetworkInfo{Type: NetworkDisconnected}, nil
 	}
 
+	best := cands[0]
+	for _, c := range cands[1:] {
+		if c.metric < best.metric {
+			best = c
+		}
+	}
+
+	// Prefer a still-associated underlay over a leftover Wi-Fi default route
+	// whose adapter is Up but not joined (WLAN isState != connected).
+	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
+		if !wifiAssociated(best.adapter) {
+			var next *candidate
+			nextMetric := ^uint32(0)
+			for i := range cands {
+				c := &cands[i]
+				if c.adapter.IfType == winipcfg.IfTypeIEEE80211 && !wifiAssociated(c.adapter) {
+					continue
+				}
+				if c.metric < nextMetric {
+					nextMetric = c.metric
+					next = c
+				}
+			}
+			if next == nil {
+				return NetworkInfo{Type: NetworkDisconnected}, nil
+			}
+			best = *next
+		}
+	}
+
+	return networkInfoFromAdapter(ctx, best.adapter)
+}
+
+func adapterViable(a *winipcfg.IPAdapterAddresses) bool {
+	if a.OperStatus != winipcfg.IfOperStatusUp {
+		return false
+	}
+	if a.IfType == winipcfg.IfTypeSoftwareLoopback {
+		return false
+	}
+	if a.Flags&winipcfg.IPAAFlagIpv4Enabled == 0 {
+		return false
+	}
+	// Extra vs Tailscale: radio-off Wi-Fi can linger OperStatus-Up with
+	// media disconnected. Skip those so leftover default routes cannot win.
+	if ifrow, err := a.LUID.Interface(); err == nil &&
+		ifrow.MediaConnectState == winipcfg.MediaConnectStateDisconnected {
+		return false
+	}
+	return true
+}
+
+func wifiAssociated(a *winipcfg.IPAdapterAddresses) bool {
+	_, _, wireless, associated := lookupWifi(a)
+	if wireless {
+		return associated
+	}
+	// WLAN API did not recognize the adapter; do not drop a viable default.
+	return true
+}
+
+func lookupWifi(a *winipcfg.IPAdapterAddresses) (ssid, bssid string, wireless, associated bool) {
+	var ifaceGUID windows.GUID
+	desc := a.Description()
+	if ifrow, err := a.LUID.Interface(); err == nil {
+		ifaceGUID = ifrow.InterfaceGUID
+		if desc == "" {
+			desc = ifrow.Description()
+		}
+	}
+	ssid, bssid, wireless, associated, err := wifiInfoForInterface(a.LUID, ifaceGUID, desc)
+	if err != nil {
+		log.Debug(tag, "wifi info ifIndex=%d iface=%s guid=%s: %v",
+			a.IfIndex, a.FriendlyName(), ifaceGUID.String(), err)
+	}
+	return ssid, bssid, wireless, associated
+}
+
+func bestPhysicalUnderlay(ctx context.Context, prev NetworkInfo) (NetworkInfo, error) {
+	addrs, err := winipcfg.GetAdaptersAddresses(
+		windows.AF_UNSPEC,
+		winipcfg.GAAFlagIncludeAllInterfaces,
+	)
+	if err != nil {
+		return NetworkInfo{Type: NetworkDisconnected}, err
+	}
+
+	try := func(a *winipcfg.IPAdapterAddresses) (NetworkInfo, bool) {
+		if isTunnelAdapter(a) || !adapterViable(a) {
+			return NetworkInfo{}, false
+		}
+		if a.IfType == winipcfg.IfTypeIEEE80211 && !wifiAssociated(a) {
+			return NetworkInfo{}, false
+		}
+		info, ierr := networkInfoFromAdapter(ctx, a)
+		if ierr != nil || (!info.HasIPv4 && !info.HasIPv6) {
+			return NetworkInfo{}, false
+		}
+		return info, true
+	}
+
+	if prev.IfIndex != 0 {
+		for _, a := range addrs {
+			if a.IfIndex == prev.IfIndex {
+				if info, ok := try(a); ok {
+					return info, nil
+				}
+				break
+			}
+		}
+	}
+	for _, a := range addrs {
+		if info, ok := try(a); ok {
+			return info, nil
+		}
+	}
+	return NetworkInfo{Type: NetworkDisconnected}, nil
+}
+
+func networkInfoFromAdapter(ctx context.Context, a *winipcfg.IPAdapterAddresses) (NetworkInfo, error) {
 	info := NetworkInfo{
 		InterfaceName: a.FriendlyName(),
 		IfIndex:       a.IfIndex,
@@ -285,12 +430,9 @@ func networkInfoFromLUID(ctx context.Context, luid winipcfg.LUID, ifIndex uint32
 	}
 
 	if info.Type == NetworkWifi {
-		ssid, bssid, wireless, werr := wifiInfoForInterface(info.IfIndex, a.AdapterName())
-		if werr != nil {
-			log.Debug(tag, "wifi info ifIndex=%d iface=%s: %v",
-				info.IfIndex, info.InterfaceName, werr)
-		}
-		if wireless {
+		ssid, bssid, wireless, associated := lookupWifi(a)
+		switch {
+		case associated:
 			if ssid == "" {
 				info.SSID = UnknownSSID
 			} else {
@@ -301,8 +443,9 @@ func networkInfoFromLUID(ctx context.Context, luid winipcfg.LUID, ifIndex uint32
 			} else {
 				info.BSSID = bssid
 			}
-		} else {
-			// Unable to get Wi-Fi details, use placeholders
+		case wireless:
+			return NetworkInfo{Type: NetworkDisconnected}, nil
+		default:
 			info.SSID = UnknownSSID
 			info.BSSID = UnknownBSSID
 		}
@@ -330,22 +473,6 @@ func classifyIfType(t winipcfg.IfType) NetworkType {
 	default:
 		return NetworkOther
 	}
-}
-
-func isTunnelLUID(luid winipcfg.LUID) bool {
-	addrs, err := winipcfg.GetAdaptersAddresses(
-		windows.AF_UNSPEC,
-		winipcfg.GAAFlagIncludeAllInterfaces,
-	)
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		if a.LUID == luid {
-			return isTunnelAdapter(a)
-		}
-	}
-	return false
 }
 
 func isTunnelAdapter(a *winipcfg.IPAdapterAddresses) bool {

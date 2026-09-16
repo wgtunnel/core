@@ -28,6 +28,10 @@ type NetworkInfo struct {
 	HasIPv6 bool
 
 	DNSServers []string
+
+	// Windows 11 24H2+: WlanQueryInterface(current_connection) was denied
+	// without precise-location consent.
+	LocationPermissionDenied bool
 }
 
 func (n NetworkInfo) HasUsableUnderlay() bool {
@@ -53,7 +57,8 @@ func (a NetworkInfo) Equal(b NetworkInfo) bool {
 		a.SSID != b.SSID ||
 		a.BSSID != b.BSSID ||
 		a.HasIPv4 != b.HasIPv4 ||
-		a.HasIPv6 != b.HasIPv6 {
+		a.HasIPv6 != b.HasIPv6 ||
+		a.LocationPermissionDenied != b.LocationPermissionDenied {
 		return false
 	}
 	if len(a.DNSServers) != len(b.DNSServers) {

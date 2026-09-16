@@ -20,14 +20,15 @@ var (
 )
 
 type networkInfoDTO struct {
-	Type          string   `json:"type"`
-	InterfaceName string   `json:"interfaceName"`
-	IfIndex       uint32   `json:"ifIndex"`
-	SSID          string   `json:"ssid"`
-	BSSID         string   `json:"bssid"`
-	HasIPv4       bool     `json:"hasIpv4"`
-	HasIPv6       bool     `json:"hasIpv6"`
-	DNSServers    []string `json:"dnsServers"`
+	Type                     string   `json:"type"`
+	InterfaceName            string   `json:"interfaceName"`
+	IfIndex                  uint32   `json:"ifIndex"`
+	SSID                     string   `json:"ssid"`
+	BSSID                    string   `json:"bssid"`
+	HasIPv4                  bool     `json:"hasIpv4"`
+	HasIPv6                  bool     `json:"hasIpv6"`
+	DNSServers               []string `json:"dnsServers"`
+	LocationPermissionDenied bool     `json:"locationPermissionDenied"`
 }
 
 func toDTO(info NetworkInfo) networkInfoDTO {
@@ -41,15 +42,15 @@ func toDTO(info NetworkInfo) networkInfoDTO {
 		typeStr = "other"
 	}
 	return networkInfoDTO{
-		Type:          typeStr,
-		InterfaceName: info.InterfaceName,
-		IfIndex:       info.IfIndex,
-		SSID:          info.SSID,
-		BSSID:         info.BSSID,
-		HasIPv4:       info.HasIPv4,
-		HasIPv6:       info.HasIPv6,
-		// Kotlin expects and array
-		DNSServers: nonNilStrings(info.DNSServers),
+		Type:                     typeStr,
+		InterfaceName:            info.InterfaceName,
+		IfIndex:                  info.IfIndex,
+		SSID:                     info.SSID,
+		BSSID:                    info.BSSID,
+		HasIPv4:                  info.HasIPv4,
+		HasIPv6:                  info.HasIPv6,
+		DNSServers:               nonNilStrings(info.DNSServers),
+		LocationPermissionDenied: info.LocationPermissionDenied,
 	}
 }
 
