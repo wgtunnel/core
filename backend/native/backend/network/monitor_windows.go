@@ -285,7 +285,7 @@ func networkInfoFromLUID(ctx context.Context, luid winipcfg.LUID, ifIndex uint32
 	}
 
 	if info.Type == NetworkWifi {
-		ssid, bssid, wireless, werr := wifiInfoForInterface(info.IfIndex, info.InterfaceName)
+		ssid, bssid, wireless, werr := wifiInfoForInterface(info.IfIndex, a.AdapterName())
 		if werr != nil {
 			log.Debug(tag, "wifi info ifIndex=%d iface=%s: %v",
 				info.IfIndex, info.InterfaceName, werr)

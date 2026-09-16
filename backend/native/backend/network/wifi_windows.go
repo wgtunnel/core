@@ -68,7 +68,7 @@ type wlanConnectionAttributes struct {
 
 // wifiInfoForInterface returns ssid, bssid, wireless.
 // wireless is true if this ifIndex is a WLAN interface.
-func wifiInfoForInterface(ifIndex uint32, ifName string) (ssid, bssid string, wireless bool, err error) {
+func wifiInfoForInterface(ifIndex uint32, adapterGUID string) (ssid, bssid string, wireless bool, err error) {
 	var handle uintptr
 	var negotiated uint32
 	r, _, e := procWlanOpenHandle.Call(
@@ -99,13 +99,13 @@ func wifiInfoForInterface(ifIndex uint32, ifName string) (ssid, bssid string, wi
 	n := int(list.dwNumberOfItems)
 	infos := unsafe.Slice(&list.InterfaceInfo[0], n)
 
-	// Match WLAN interface by description to friendly name
-	targetName := stringsEqualFoldNormalize(ifName)
+	// Match WLAN interface by GUID, the one identifier WlanEnumInterfaces and
+	// GetAdaptersAddresses actually share for the same physical adapter.
+	targetGUID := normalizeGUID(adapterGUID)
 
 	var matched *wlanInterfaceInfo
 	for i := range infos {
-		desc := windows.UTF16ToString(infos[i].strInterfaceDescription[:])
-		if targetName != "" && stringsEqualFoldNormalize(desc) == targetName {
+		if targetGUID != "" && normalizeGUID(infos[i].InterfaceGUID.String()) == targetGUID {
 			matched = &infos[i]
 			break
 		}
@@ -152,6 +152,11 @@ func wifiInfoForInterface(ifIndex uint32, ifName string) (ssid, bssid string, wi
 	return ssid, bssid, true, nil
 }
 
-func stringsEqualFoldNormalize(s string) string {
-	return strings.TrimSpace(strings.ToLower(s))
+// normalizeGUID strips braces/whitespace and lowercases a GUID string so that
+// AdapterName and GUID compare equal regardless of casing.
+func normalizeGUID(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	return strings.ToLower(s)
 }
