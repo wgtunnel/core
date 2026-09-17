@@ -67,11 +67,17 @@ type wlanConnectionAttributes struct {
 	// security attrs follow — not needed
 }
 
+type wifiDetails struct {
+	SSID, BSSID    string
+	Wireless       bool
+	Associated     bool
+	LocationDenied bool
+}
+
 // wifiInfoForInterface returns SSID/BSSID for the TCP/IP adapter identified
 // by LUID / InterfaceGUID.
-// wireless is true if a WLAN interface was matched.
-// associated is true if that interface is currently joined to a network.
-func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, description string) (ssid, bssid string, wireless, associated bool, err error) {
+func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, description string) (wifiDetails, error) {
+	var d wifiDetails
 	var handle uintptr
 	var negotiated uint32
 	r, _, e := procWlanOpenHandle.Call(
@@ -82,9 +88,9 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 	)
 	if r != 0 {
 		if !errors.Is(e, syscall.Errno(0)) {
-			return "", "", false, false, fmt.Errorf("WlanOpenHandle: %v", e)
+			return d, fmt.Errorf("WlanOpenHandle: %v", e)
 		}
-		return "", "", false, false, fmt.Errorf("WlanOpenHandle: %d", r)
+		return d, fmt.Errorf("WlanOpenHandle: %d", r)
 	}
 	defer procWlanCloseHandle.Call(handle, 0)
 
@@ -92,16 +98,16 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 	r, _, e = procWlanEnumInterfaces.Call(handle, 0, uintptr(unsafe.Pointer(&listPtr)))
 	if r != 0 || listPtr == 0 {
 		if !errors.Is(e, syscall.Errno(0)) {
-			return "", "", false, false, fmt.Errorf("WlanEnumInterfaces: %v", e)
+			return d, fmt.Errorf("WlanEnumInterfaces: %v", e)
 		}
-		return "", "", false, false, fmt.Errorf("WlanEnumInterfaces: %d", r)
+		return d, fmt.Errorf("WlanEnumInterfaces: %d", r)
 	}
 	defer procWlanFreeMemory.Call(listPtr)
 
 	list := (*wlanInterfaceList)(unsafe.Pointer(listPtr))
 	n := int(list.dwNumberOfItems)
 	if n <= 0 {
-		return "", "", false, false, nil
+		return d, nil
 	}
 	infos := unsafe.Slice(&list.InterfaceInfo[0], n)
 
@@ -111,23 +117,38 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 		for i := range infos {
 			seen = append(seen, infos[i].InterfaceGUID.String())
 		}
-		return "", "", false, false, fmt.Errorf(
+		return d, fmt.Errorf(
 			"no WLAN interface matched GUID %s desc=%q (enumerated: %v)",
 			ifaceGUID.String(), description, seen,
 		)
 	}
 
-	wireless = true
+	d.Wireless = true
 	if matched.isState != wlanInterfaceStateConnected {
-		return "", "", true, false, nil
+		return d, nil
 	}
+	d.Associated = true
 
+	ssid, bssid, denied, qerr := queryCurrentConnection(handle, &matched.InterfaceGUID)
+	if denied {
+		d.LocationDenied = true
+		return d, qerr
+	}
+	if qerr != nil {
+		return d, nil
+	}
+	d.SSID = ssid
+	d.BSSID = bssid
+	return d, nil
+}
+
+func queryCurrentConnection(handle uintptr, guid *windows.GUID) (ssid, bssid string, locationDenied bool, err error) {
 	var dataPtr uintptr
 	var dataSize uint32
 	var opcodeCode uint32
-	r, _, e = procWlanQueryInterface.Call(
+	r, _, e := procWlanQueryInterface.Call(
 		handle,
-		uintptr(unsafe.Pointer(&matched.InterfaceGUID)),
+		uintptr(unsafe.Pointer(guid)),
 		uintptr(wlanIntfOpcodeCurrentConnection),
 		0,
 		uintptr(unsafe.Pointer(&dataSize)),
@@ -135,11 +156,13 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 		uintptr(unsafe.Pointer(&opcodeCode)),
 	)
 	if r == uintptr(windows.ERROR_ACCESS_DENIED) {
-		return "", "", true, true, fmt.Errorf("WlanQueryInterface: access denied")
+		return "", "", true, fmt.Errorf("WlanQueryInterface: access denied")
 	}
 	if r != 0 || dataPtr == 0 {
-		// Joined, but SSID/BSSID query failed.
-		return "", "", true, true, nil
+		if !errors.Is(e, syscall.Errno(0)) && r != 0 {
+			return "", "", false, fmt.Errorf("WlanQueryInterface: %v", e)
+		}
+		return "", "", false, fmt.Errorf("WlanQueryInterface: %d", r)
 	}
 	defer procWlanFreeMemory.Call(dataPtr)
 
@@ -158,7 +181,7 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 	if b != [6]byte{} {
 		bssid = net.HardwareAddr(b[:]).String()
 	}
-	return ssid, bssid, true, true, nil
+	return ssid, bssid, false, nil
 }
 
 // wifiSSIDLocationDenied reports whether Windows 11 24H2+ is blocking
@@ -190,23 +213,16 @@ func wifiSSIDLocationDenied() bool {
 		return false
 	}
 	infos := unsafe.Slice(&list.InterfaceInfo[0], n)
-
-	var dataPtr uintptr
-	var dataSize uint32
-	var opcodeCode uint32
-	r, _, _ = procWlanQueryInterface.Call(
-		handle,
-		uintptr(unsafe.Pointer(&infos[0].InterfaceGUID)),
-		uintptr(wlanIntfOpcodeCurrentConnection),
-		0,
-		uintptr(unsafe.Pointer(&dataSize)),
-		uintptr(unsafe.Pointer(&dataPtr)),
-		uintptr(unsafe.Pointer(&opcodeCode)),
-	)
-	if dataPtr != 0 {
-		procWlanFreeMemory.Call(dataPtr)
+	// Location consent is process-wide, but a disconnected radio often
+	// returns ERROR_INVALID_STATE instead of ACCESS_DENIED. Query each
+	// iface until one reports the location gate.
+	for i := range infos {
+		_, _, denied, _ := queryCurrentConnection(handle, &infos[i].InterfaceGUID)
+		if denied {
+			return true
+		}
 	}
-	return r == uintptr(windows.ERROR_ACCESS_DENIED)
+	return false
 }
 
 func matchWlanInterface(infos []wlanInterfaceInfo, luid winipcfg.LUID, ifaceGUID windows.GUID, description string) *wlanInterfaceInfo {

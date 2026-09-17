@@ -184,7 +184,9 @@ func (m *windowsMonitor) refresh() {
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
 
-	info.LocationPermissionDenied = wifiSSIDLocationDenied()
+	if info.Type == NetworkWifi && !info.LocationPermissionDenied && !info.HasKnownSSID() {
+		info.LocationPermissionDenied = wifiSSIDLocationDenied()
+	}
 
 	m.mu.Lock()
 
@@ -261,6 +263,7 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 	}
 	var cands []candidate
 	sawTunDefault := false
+	cache := &wifiCache{}
 
 	for i := range rows {
 		r := &rows[i]
@@ -298,12 +301,12 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 	// Prefer a still-associated underlay over a leftover Wi-Fi default route
 	// whose adapter is Up but not joined (WLAN isState != connected).
 	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
-		if !wifiAssociated(best.adapter) {
+		if !cache.associated(best.adapter) {
 			var next *candidate
 			nextMetric := ^uint32(0)
 			for i := range cands {
 				c := &cands[i]
-				if c.adapter.IfType == winipcfg.IfTypeIEEE80211 && !wifiAssociated(c.adapter) {
+				if c.adapter.IfType == winipcfg.IfTypeIEEE80211 && !cache.associated(c.adapter) {
 					continue
 				}
 				if c.metric < nextMetric {
@@ -318,7 +321,11 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 		}
 	}
 
-	return networkInfoFromAdapter(ctx, best.adapter)
+	var wifi wifiDetails
+	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
+		wifi = cache.lookup(best.adapter)
+	}
+	return networkInfoFromAdapter(ctx, best.adapter, wifi)
 }
 
 func adapterViable(a *winipcfg.IPAdapterAddresses) bool {
@@ -340,16 +347,32 @@ func adapterViable(a *winipcfg.IPAdapterAddresses) bool {
 	return true
 }
 
-func wifiAssociated(a *winipcfg.IPAdapterAddresses) bool {
-	_, _, wireless, associated := lookupWifi(a)
-	if wireless {
-		return associated
+type wifiCache struct {
+	byLUID map[winipcfg.LUID]wifiDetails
+}
+
+func (c *wifiCache) lookup(a *winipcfg.IPAdapterAddresses) wifiDetails {
+	if c.byLUID == nil {
+		c.byLUID = make(map[winipcfg.LUID]wifiDetails)
+	}
+	if d, ok := c.byLUID[a.LUID]; ok {
+		return d
+	}
+	d := lookupWifi(a)
+	c.byLUID[a.LUID] = d
+	return d
+}
+
+func (c *wifiCache) associated(a *winipcfg.IPAdapterAddresses) bool {
+	d := c.lookup(a)
+	if d.Wireless {
+		return d.Associated
 	}
 	// WLAN API did not recognize the adapter; do not drop a viable default.
 	return true
 }
 
-func lookupWifi(a *winipcfg.IPAdapterAddresses) (ssid, bssid string, wireless, associated bool) {
+func lookupWifi(a *winipcfg.IPAdapterAddresses) wifiDetails {
 	var ifaceGUID windows.GUID
 	desc := a.Description()
 	if ifrow, err := a.LUID.Interface(); err == nil {
@@ -358,12 +381,12 @@ func lookupWifi(a *winipcfg.IPAdapterAddresses) (ssid, bssid string, wireless, a
 			desc = ifrow.Description()
 		}
 	}
-	ssid, bssid, wireless, associated, err := wifiInfoForInterface(a.LUID, ifaceGUID, desc)
+	d, err := wifiInfoForInterface(a.LUID, ifaceGUID, desc)
 	if err != nil {
 		log.Debug(tag, "wifi info ifIndex=%d iface=%s guid=%s: %v",
 			a.IfIndex, a.FriendlyName(), ifaceGUID.String(), err)
 	}
-	return ssid, bssid, wireless, associated
+	return d
 }
 
 func bestPhysicalUnderlay(ctx context.Context, prev NetworkInfo) (NetworkInfo, error) {
@@ -375,14 +398,19 @@ func bestPhysicalUnderlay(ctx context.Context, prev NetworkInfo) (NetworkInfo, e
 		return NetworkInfo{Type: NetworkDisconnected}, err
 	}
 
+	cache := &wifiCache{}
 	try := func(a *winipcfg.IPAdapterAddresses) (NetworkInfo, bool) {
 		if isTunnelAdapter(a) || !adapterViable(a) {
 			return NetworkInfo{}, false
 		}
-		if a.IfType == winipcfg.IfTypeIEEE80211 && !wifiAssociated(a) {
-			return NetworkInfo{}, false
+		var wifi wifiDetails
+		if a.IfType == winipcfg.IfTypeIEEE80211 {
+			if !cache.associated(a) {
+				return NetworkInfo{}, false
+			}
+			wifi = cache.lookup(a)
 		}
-		info, ierr := networkInfoFromAdapter(ctx, a)
+		info, ierr := networkInfoFromAdapter(ctx, a, wifi)
 		if ierr != nil || (!info.HasIPv4 && !info.HasIPv6) {
 			return NetworkInfo{}, false
 		}
@@ -407,7 +435,7 @@ func bestPhysicalUnderlay(ctx context.Context, prev NetworkInfo) (NetworkInfo, e
 	return NetworkInfo{Type: NetworkDisconnected}, nil
 }
 
-func networkInfoFromAdapter(ctx context.Context, a *winipcfg.IPAdapterAddresses) (NetworkInfo, error) {
+func networkInfoFromAdapter(ctx context.Context, a *winipcfg.IPAdapterAddresses, wifi wifiDetails) (NetworkInfo, error) {
 	info := NetworkInfo{
 		InterfaceName: a.FriendlyName(),
 		IfIndex:       a.IfIndex,
@@ -430,23 +458,17 @@ func networkInfoFromAdapter(ctx context.Context, a *winipcfg.IPAdapterAddresses)
 	}
 
 	if info.Type == NetworkWifi {
-		ssid, bssid, wireless, associated := lookupWifi(a)
-		switch {
-		case associated:
-			if ssid == "" {
-				info.SSID = UnknownSSID
-			} else {
-				info.SSID = ssid
-			}
-			if bssid == "" {
-				info.BSSID = UnknownBSSID
-			} else {
-				info.BSSID = bssid
-			}
-		case wireless:
-			return NetworkInfo{Type: NetworkDisconnected}, nil
-		default:
+		// This adapter already won default-route selection. Keep it as Wi-Fi
+		// even if WLAN association flickered; do not report disconnected.
+		info.LocationPermissionDenied = wifi.LocationDenied
+		if wifi.SSID != "" {
+			info.SSID = wifi.SSID
+		} else {
 			info.SSID = UnknownSSID
+		}
+		if wifi.BSSID != "" {
+			info.BSSID = wifi.BSSID
+		} else {
 			info.BSSID = UnknownBSSID
 		}
 	}
