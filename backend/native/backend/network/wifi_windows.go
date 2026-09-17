@@ -5,11 +5,11 @@ package network
 import (
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/wgtunnel/backend/log"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
@@ -68,10 +68,9 @@ type wlanConnectionAttributes struct {
 }
 
 type wifiDetails struct {
-	SSID, BSSID    string
-	Wireless       bool
-	Associated     bool
-	LocationDenied bool
+	SSID       string
+	Wireless   bool
+	Associated bool
 }
 
 // wifiInfoForInterface returns SSID/BSSID for the TCP/IP adapter identified
@@ -128,21 +127,39 @@ func wifiInfoForInterface(luid winipcfg.LUID, ifaceGUID windows.GUID, descriptio
 		return d, nil
 	}
 	d.Associated = true
-
-	ssid, bssid, denied, qerr := queryCurrentConnection(handle, &matched.InterfaceGUID)
-	if denied {
-		d.LocationDenied = true
-		return d, qerr
-	}
-	if qerr != nil {
-		return d, nil
-	}
-	d.SSID = ssid
-	d.BSSID = bssid
+	d.SSID = connectedSSID(matched.InterfaceGUID, handle)
 	return d, nil
 }
 
-func queryCurrentConnection(handle uintptr, guid *windows.GUID) (ssid, bssid string, locationDenied bool, err error) {
+// connectedSSID prefers WinRT GetConnectedSsid (not location-gated on 24H2),
+// then Network List Manager, then WlanQueryInterface for older Windows.
+// BSSID is intentionally unused on Windows: it is location-gated on 24H2
+// with no supported admin bypass.
+func connectedSSID(ifaceGUID windows.GUID, wlanHandle uintptr) string {
+	if ssid, err := connectedSSIDWinRT(ifaceGUID); err == nil && ssid != "" {
+		log.Debug(tag, "ssid via WinRT GetConnectedSsid: %s", ssid)
+		return ssid
+	} else if err != nil {
+		log.Debug(tag, "WinRT GetConnectedSsid: %v", err)
+	}
+	if ssid, err := connectedSSIDNLM(ifaceGUID); err == nil && ssid != "" {
+		log.Debug(tag, "ssid via Network List Manager: %s", ssid)
+		return ssid
+	} else if err != nil {
+		log.Debug(tag, "Network List Manager SSID: %v", err)
+	}
+	ssid, err := queryCurrentConnection(wlanHandle, &ifaceGUID)
+	if err == nil && ssid != "" {
+		log.Debug(tag, "ssid via WlanQueryInterface: %s", ssid)
+		return ssid
+	}
+	if err != nil {
+		log.Debug(tag, "WlanQueryInterface current_connection: %v", err)
+	}
+	return ""
+}
+
+func queryCurrentConnection(handle uintptr, guid *windows.GUID) (ssid string, err error) {
 	var dataPtr uintptr
 	var dataSize uint32
 	var opcodeCode uint32
@@ -155,14 +172,11 @@ func queryCurrentConnection(handle uintptr, guid *windows.GUID) (ssid, bssid str
 		uintptr(unsafe.Pointer(&dataPtr)),
 		uintptr(unsafe.Pointer(&opcodeCode)),
 	)
-	if r == uintptr(windows.ERROR_ACCESS_DENIED) {
-		return "", "", true, fmt.Errorf("WlanQueryInterface: access denied")
-	}
 	if r != 0 || dataPtr == 0 {
 		if !errors.Is(e, syscall.Errno(0)) && r != 0 {
-			return "", "", false, fmt.Errorf("WlanQueryInterface: %v", e)
+			return "", fmt.Errorf("WlanQueryInterface: %v", e)
 		}
-		return "", "", false, fmt.Errorf("WlanQueryInterface: %d", r)
+		return "", fmt.Errorf("WlanQueryInterface: %d", r)
 	}
 	defer procWlanFreeMemory.Call(dataPtr)
 
@@ -177,52 +191,7 @@ func queryCurrentConnection(handle uintptr, guid *windows.GUID) (ssid, bssid str
 	if ssid == "" {
 		ssid = windows.UTF16ToString(attrs.strProfileName[:])
 	}
-	b := attrs.wlanAssociationAttributes.dot11Bssid
-	if b != [6]byte{} {
-		bssid = net.HardwareAddr(b[:]).String()
-	}
-	return ssid, bssid, false, nil
-}
-
-// wifiSSIDLocationDenied reports whether Windows 11 24H2+ is blocking
-// WlanQueryInterface(current_connection) without precise-location consent.
-func wifiSSIDLocationDenied() bool {
-	var handle uintptr
-	var negotiated uint32
-	r, _, _ := procWlanOpenHandle.Call(
-		uintptr(wlanClientVersionVista),
-		0,
-		uintptr(unsafe.Pointer(&negotiated)),
-		uintptr(unsafe.Pointer(&handle)),
-	)
-	if r != 0 {
-		return false
-	}
-	defer procWlanCloseHandle.Call(handle, 0)
-
-	var listPtr uintptr
-	r, _, _ = procWlanEnumInterfaces.Call(handle, 0, uintptr(unsafe.Pointer(&listPtr)))
-	if r != 0 || listPtr == 0 {
-		return false
-	}
-	defer procWlanFreeMemory.Call(listPtr)
-
-	list := (*wlanInterfaceList)(unsafe.Pointer(listPtr))
-	n := int(list.dwNumberOfItems)
-	if n <= 0 {
-		return false
-	}
-	infos := unsafe.Slice(&list.InterfaceInfo[0], n)
-	// Location consent is process-wide, but a disconnected radio often
-	// returns ERROR_INVALID_STATE instead of ACCESS_DENIED. Query each
-	// iface until one reports the location gate.
-	for i := range infos {
-		_, _, denied, _ := queryCurrentConnection(handle, &infos[i].InterfaceGUID)
-		if denied {
-			return true
-		}
-	}
-	return false
+	return ssid, nil
 }
 
 func matchWlanInterface(infos []wlanInterfaceInfo, luid winipcfg.LUID, ifaceGUID windows.GUID, description string) *wlanInterfaceInfo {

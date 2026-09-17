@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	debounceInterval      = 200 * time.Millisecond
-	locationRetryInterval = 2 * time.Second
-	tag                   = "NetworkMonitor"
+	debounceInterval = 200 * time.Millisecond
+	tag              = "NetworkMonitor"
 )
 
 type windowsMonitor struct {
@@ -123,8 +122,6 @@ func (m *windowsMonitor) pingRefresh() {
 
 func (m *windowsMonitor) loop() {
 	deb := util.NewDebouncer(debounceInterval)
-	ticker := time.NewTicker(locationRetryInterval)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-m.stopCh:
@@ -135,13 +132,6 @@ func (m *windowsMonitor) loop() {
 		case <-deb.C:
 			deb.Fired()
 			m.refresh()
-		case <-ticker.C:
-			m.mu.RLock()
-			denied := m.current.LocationPermissionDenied
-			m.mu.RUnlock()
-			if denied {
-				m.refresh()
-			}
 		}
 	}
 }
@@ -184,10 +174,6 @@ func (m *windowsMonitor) refresh() {
 		info = NetworkInfo{Type: NetworkDisconnected}
 	}
 
-	if info.Type == NetworkWifi && !info.LocationPermissionDenied && !info.HasKnownSSID() {
-		info.LocationPermissionDenied = wifiSSIDLocationDenied()
-	}
-
 	m.mu.Lock()
 
 	// Last known DNS on same underlay
@@ -198,16 +184,11 @@ func (m *windowsMonitor) refresh() {
 		info.DNSServers = append([]string(nil), prev.DNSServers...)
 	}
 
-	// Keep last good SSID/BSSID if this refresh only got placeholders while
-	// still on the same associated Wi-Fi underlay (WlanQueryInterface miss).
-	// Do not restore names when location consent is blocking the read.
-	if !info.LocationPermissionDenied &&
-		info.IfIndex != 0 && info.IfIndex == prev.IfIndex && info.Type == NetworkWifi {
+	// Keep last good SSID if this refresh only got placeholders while still
+	// on the same associated Wi-Fi underlay. BSSID is not populated on Windows.
+	if info.IfIndex != 0 && info.IfIndex == prev.IfIndex && info.Type == NetworkWifi {
 		if info.SSID == UnknownSSID && prev.SSID != "" && prev.SSID != UnknownSSID {
 			info.SSID = prev.SSID
-		}
-		if info.BSSID == UnknownBSSID && prev.BSSID != "" && prev.BSSID != UnknownBSSID {
-			info.BSSID = prev.BSSID
 		}
 	}
 
@@ -460,16 +441,10 @@ func networkInfoFromAdapter(ctx context.Context, a *winipcfg.IPAdapterAddresses,
 	if info.Type == NetworkWifi {
 		// This adapter already won default-route selection. Keep it as Wi-Fi
 		// even if WLAN association flickered; do not report disconnected.
-		info.LocationPermissionDenied = wifi.LocationDenied
 		if wifi.SSID != "" {
 			info.SSID = wifi.SSID
 		} else {
 			info.SSID = UnknownSSID
-		}
-		if wifi.BSSID != "" {
-			info.BSSID = wifi.BSSID
-		} else {
-			info.BSSID = UnknownBSSID
 		}
 	}
 
