@@ -48,6 +48,18 @@ add_custom_command(TARGET libam.so POST_BUILD
 set(GO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../backend")
 set(AMGO_OUT "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libam-go.so")
 
+# Recursively track every Go/C/header source in this module to prevent stale builds
+file(GLOB_RECURSE BACKEND_SRCS
+		"${GO_DIR}/*.go"
+		"${GO_DIR}/*.c"
+		"${GO_DIR}/*.h")
+
+# for local dev
+set(LOCAL_AMNEZIAWG_GO_DIR "${GO_DIR}/../../../../amneziawg-go")
+if(EXISTS "${LOCAL_AMNEZIAWG_GO_DIR}")
+	file(GLOB_RECURSE LOCAL_AMNEZIAWG_GO_SRCS "${LOCAL_AMNEZIAWG_GO_DIR}/*.go")
+endif()
+
 add_custom_command(
 		OUTPUT "${AMGO_OUT}"
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
@@ -69,21 +81,11 @@ add_custom_command(
 		VERBATIM
 		DEPENDS
 		${GO_DIR}/Makefile
-		${GO_DIR}/goruntime-boottime-over-monotonic.diff
 		${GO_DIR}/go.mod
-		${GO_DIR}/main_android.go
-		${GO_DIR}/jni/jni.go
-		${GO_DIR}/jni/include/vpn_jni.h
-		${GO_DIR}/jni/vpn_jni_shared.c
-		${GO_DIR}/jni/vpn_jni_android.c
-		${GO_DIR}/jni/proxy_jni.c
-		${GO_DIR}/jni/bootstrap_jni.c
-		${GO_DIR}/bootstrap/bypass/handle_android.go
-		${GO_DIR}/bootstrap/bypass/iface.go
-		${GO_DIR}/bootstrap/bypass/tunnel.go
-		${GO_DIR}/bootstrap/bypass/tunnel_android.go
-		${GO_DIR}/tunwrap/wrap.go
-		${GO_DIR}/vpn/vpn_shared.go
+		${GO_DIR}/go.sum
+		${GO_DIR}/goruntime-boottime-over-monotonic.diff
+		${BACKEND_SRCS}
+		${LOCAL_AMNEZIAWG_GO_SRCS}
 )
 
 add_custom_target(libam-go.so ALL DEPENDS "${AMGO_OUT}")

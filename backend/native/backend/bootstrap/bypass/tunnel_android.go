@@ -17,7 +17,10 @@ import (
 func bindTunnelSocket(fd uintptr) error {
 	handle := CurrentVpnNetworkHandle()
 	if handle == 0 {
-		return nil
+		// Do not fall back to the underlay so FakeDNS doesn't leak. 
+		// Caller SERVFAILs instead.
+		log.Debug("TunnelDialer", "vpn network handle not ready; black-holing DNS")
+		return fmt.Errorf("vpn network handle not ready")
 	}
 	rc := C.android_setsocknetwork(C.net_handle_t(handle), C.int(fd))
 	if rc != 0 {

@@ -90,7 +90,7 @@ func startVpnDevice(
 		tunDevice.Close()
 		return -1
 	}
-
+	
 	if err := tunDevice.IpcSet(ipcRequest.IpcRequest); err != nil {
 		log.Error(tag, "IpcSet: %v", err)
 		tunDevice.Close()
