@@ -170,6 +170,11 @@ func lookupUnderlay(ctx context.Context) NetworkInfo {
 		SSID:          UnknownSSID,
 		BSSID:         UnknownBSSID,
 	}
+	if info.Type == NetworkWifi {
+		if ssid := currentWifiSSID(time.Now()); ssid != "" {
+			info.SSID = ssid
+		}
+	}
 	addrs, _ := iface.Addrs()
 	for _, a := range addrs {
 		ipnet, ok := a.(*net.IPNet)
