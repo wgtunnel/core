@@ -214,6 +214,13 @@ func (f *DarwinFirewall) ensureAnchorRef() error {
 	if strings.Contains(string(sr), `anchor "`+pfAnchorName+`"`) {
 		return nil
 	}
+
+	// pfAnchorFile must exist before pfctl runs as it loads it immediately
+	if _, err := os.Stat(pfAnchorFile); os.IsNotExist(err) {
+		if err := os.WriteFile(pfAnchorFile, []byte{}, 0o600); err != nil {
+			return fmt.Errorf("create placeholder %s: %w", pfAnchorFile, err)
+		}
+	}
 	stock, err := os.ReadFile(stockPFConf)
 	if err != nil {
 		stock = []byte{}
