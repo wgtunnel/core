@@ -347,7 +347,36 @@ func (r *darwinRouter) ifconfig(args ...string) error {
 	return nil
 }
 
+// BSD/macOS allows only one default-route entry per address family in the
+// main table. Splitting into two complementary /1 routes avoids this issue
+// since both are specific than any /0 and win via longest-prefix-match without
+// touching the existing default, the same technique used for Windows
 func (r *darwinRouter) route(op string, p netip.Prefix, iface string, ifscope bool) error {
+	if p.Bits() == 0 {
+		for _, half := range splitDefaultRoute(p.Addr().Is6()) {
+			if err := r.routeSingle(op, half, iface, ifscope); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return r.routeSingle(op, p, iface, ifscope)
+}
+
+func splitDefaultRoute(isV6 bool) []netip.Prefix {
+	if isV6 {
+		return []netip.Prefix{
+			netip.MustParsePrefix("::/1"),
+			netip.MustParsePrefix("8000::/1"),
+		}
+	}
+	return []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/1"),
+		netip.MustParsePrefix("128.0.0.0/1"),
+	}
+}
+
+func (r *darwinRouter) routeSingle(op string, p netip.Prefix, iface string, ifscope bool) error {
 	inet := "inet"
 	if p.Addr().Is6() {
 		inet = "inet6"
