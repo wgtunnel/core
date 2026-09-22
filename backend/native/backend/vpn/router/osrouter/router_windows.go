@@ -112,7 +112,6 @@ func (r *windowsRouter) Set(c *router.Config) error {
 			r.iface, // name, not LUID
 			newC.DNS,
 			newC.SearchDomains,
-			isNewFull,
 		); err != nil {
 			return err
 		}

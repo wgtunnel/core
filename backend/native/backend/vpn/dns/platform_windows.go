@@ -23,12 +23,10 @@ func SetDNS(
 	iface string,
 	servers []netip.Addr,
 	searchDomains []string,
-	fullTunnel bool,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_ = fullTunnel
 
 	if len(servers) == 0 && len(searchDomains) == 0 {
 		log.Debug(tag, "Skipping DNS apply (empty)")

@@ -22,7 +22,6 @@ func SetDNS(
 	iface string,
 	servers []netip.Addr,
 	searchDomains []string,
-	fullTunnel bool,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -41,7 +40,7 @@ func SetDNS(
 				log.Error(tag, "resolved: get iface index for %s: %v", iface, lerr)
 			} else {
 				log.Debug(tag, "Configuring DNS via systemd-resolved on %s (ifIndex=%d)...", iface, idx)
-				if err := r.ApplyTunnelDNS(ctx, idx, servers, searchDomains, fullTunnel); err != nil {
+				if err := r.ApplyTunnelDNS(ctx, idx, servers, searchDomains); err != nil {
 					log.Error(tag, "resolved apply failed: %v", err)
 				} else {
 					return nil
