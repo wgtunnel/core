@@ -14,6 +14,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
 	"github.com/wgtunnel/backend/log"
+	tunwrapdns "github.com/wgtunnel/backend/tunwrap/dns"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall/firewallmgr"
 	"github.com/wgtunnel/backend/vpn/router"
 	"github.com/wgtunnel/backend/vpn/router/osrouter"
@@ -216,6 +217,7 @@ func startVpn(
 
 	if conf, err := wireproxyawg.ParseConfigString(config); err == nil {
 		if cfg, err := parseToRouterConfig(conf, 0); err == nil && rt != nil {
+			applyFakeDNSOverride(cfg, dnsConfig)
 			_ = rt.Set(cfg)
 		}
 	}
@@ -234,6 +236,28 @@ func closeDesktopExtras(id int32) {
 	desktopMu.Unlock()
 	if ex != nil && ex.router != nil {
 		_ = ex.router.Close()
+	}
+}
+
+// applyFakeDNSOverride points the OS resolver config at the FakeDNS
+// addresses instead of the tunnel's raw configured DNS server whenever
+// FakeDNS hijacking is active for this session
+func applyFakeDNSOverride(cfg *router.Config, dnsConfigJSON string) {
+	dnsCfg, err := tunwrapdns.ParseTunnelDNSConfig(dnsConfigJSON)
+	if err != nil || dnsCfg == nil {
+		return
+	}
+	fake := make([]netip.Addr, 0, 2)
+	if addr, err := netip.ParseAddr(dnsCfg.FakeDNS); err == nil {
+		fake = append(fake, addr)
+	}
+	if dnsCfg.FakeDNSV6 != "" {
+		if addr, err := netip.ParseAddr(dnsCfg.FakeDNSV6); err == nil {
+			fake = append(fake, addr)
+		}
+	}
+	if len(fake) > 0 {
+		cfg.DNS = fake
 	}
 }
 

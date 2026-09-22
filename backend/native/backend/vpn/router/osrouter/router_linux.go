@@ -326,7 +326,6 @@ func (r *linuxRouter) syncDNS(newC, prevC *router.Config) error {
 		r.iface,
 		newC.DNS,
 		newC.SearchDomains,
-		v4Full || v6Full,
 	)
 }
 
