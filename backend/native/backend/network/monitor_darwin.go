@@ -133,7 +133,10 @@ func (m *darwinMonitor) Stop() {
 }
 
 func (m *darwinMonitor) refresh() {
-	info := lookupUnderlay(m.ctx)
+	m.mu.RLock()
+	prev := m.current
+	m.mu.RUnlock()
+	info := lookupUnderlay(m.ctx, prev)
 	m.mu.Lock()
 	changed := !m.current.Equal(info)
 	if changed {
@@ -150,7 +153,7 @@ func (m *darwinMonitor) refresh() {
 	}
 }
 
-func lookupUnderlay(ctx context.Context) NetworkInfo {
+func lookupUnderlay(ctx context.Context, prev NetworkInfo) NetworkInfo {
 	d := LookupPhysicalDefault4()
 	if d.IfName == "" {
 		d = LookupPhysicalDefault6()
@@ -171,7 +174,11 @@ func lookupUnderlay(ctx context.Context) NetworkInfo {
 		BSSID:         UnknownBSSID,
 	}
 	if info.Type == NetworkWifi {
-		if ssid := currentWifiSSID(time.Now()); ssid != "" {
+		// Only derive SSID on a genuine network change
+		// otherwise reuse the cached value instead
+		if prev.Type == NetworkWifi && prev.InterfaceName == ifName && prev.HasKnownSSID() {
+			info.SSID = prev.SSID
+		} else if ssid := currentWifiSSID(d.Gateway); ssid != "" {
 			info.SSID = ssid
 		}
 	}

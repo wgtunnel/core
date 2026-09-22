@@ -13,29 +13,17 @@ import (
 	"howett.net/plist"
 )
 
-const (
-	knownNetworksPlist = "/Library/Preferences/com.apple.wifi.known-networks.plist"
-
-	// How fresh a known network's last-association timestamp must be to be
-	// trusted as "this is the network we're on right now". Generous enough to
-	// absorb our own debounce/refresh latency, tight enough that a stale
-	// entry from a previous session can never win.
-	associationFreshWindow = 30 * time.Second
-)
+const knownNetworksPlist = "/Library/Preferences/com.apple.wifi.known-networks.plist"
 
 // currentWifiSSID infers the current Wi-Fi SSID without CoreWLAN/CoreLocation
-// (both gated behind Location Services authorization on modern macOS)
-// Starting point was the gateway-correlation technique at
-// https://github.com/fjh658/get-ssid-rs, but testing showed something stronger is available.
-// macOS bumps UpdatedAt / LastAssociatedAt / JoinedByUserAt / JoinedBySystemAt on every association
-// to a known network, even with zero config change. This is a strong signal
-// rather than an trying to infer based on gateway or DHCP which
-// falls apart the when two known networks share a default gateway (common
-// with 192.168.1.1 style addresses). Since only one network can be associated
-// at a time, picking whichever known network was most recently touched, gated
-// by associationFreshWindow so a stale entry can never win, sidesteps the
-// gateway collision problem entirely rather than just scoring around it.
-func currentWifiSSID(now time.Time) string {
+// (both gated behind Location Services authorization on modern macOS), using
+// the gateway-correlation technique from https://github.com/fjh658/get-ssid-rs.
+//
+// With an IPv4 gateway (the common case), filters known networks to those
+// whose recorded IPv4NetworkSignature references it, then breaks ties among those candidates by recency
+// With IPv6-only networks ()where there's no IPv4Router= signature to
+// match at all), falls back to picking whichever known network was most recently associated
+func currentWifiSSID(routerIPv4 string) string {
 	data, err := os.ReadFile(knownNetworksPlist)
 	if err != nil {
 		log.Debug(tag, "read known-networks plist: %v", err)
@@ -48,8 +36,20 @@ func currentWifiSSID(now time.Time) string {
 		return ""
 	}
 
+	if routerIPv4 != "" {
+		return bestKnownNetworkMatch(root, "IPv4.Router="+routerIPv4, false)
+	}
+	return bestKnownNetworkMatch(root, "", true)
+}
+
+// bestKnownNetworkMatch scans known-network entries for the best SSID match.
+// needle == "" skips the gateway-signature filter entirely (the IPv6
+// fallback), in which case requireTouched must be true so an entry with no
+// association timestamp at all
+func bestKnownNetworkMatch(root map[string]any, needle string, requireTouched bool) string {
 	var bestSSID string
 	var bestAt time.Time
+	found := false
 	for key, v := range root {
 		if !strings.HasPrefix(key, "wifi.network.ssid.") {
 			continue
@@ -58,33 +58,67 @@ func currentWifiSSID(now time.Time) string {
 		if !ok {
 			continue
 		}
-		touched := lastTouched(netEntry)
-		if touched.IsZero() || touched.After(now) || now.Sub(touched) > associationFreshWindow {
-			continue
-		}
-		if !touched.After(bestAt) {
+		if needle != "" && !matchesRouter(netEntry, needle) {
 			continue
 		}
 		ssid := ssidFromField(netEntry["SSID"])
 		if ssid == "" {
 			continue
 		}
-		bestAt = touched
-		bestSSID = ssid
+		touched := lastTouched(netEntry)
+		if requireTouched && touched.IsZero() {
+			continue
+		}
+		if !found || touched.After(bestAt) {
+			found = true
+			bestAt = touched
+			bestSSID = ssid
+		}
 	}
 	return bestSSID
 }
 
-// lastTouched is the most recent of every join/association timestamp macOS
-// tracks per known network. Which specific field moves depends on how the
-// rejoin or join happened (user-initiated vs system rejoin, like after a
-// radio power cycle), so all four are checked rather than relying on one.
+func matchesRouter(netEntry map[string]any, needle string) bool {
+	if sig, ok := netEntry["IPv4NetworkSignature"].(string); ok && strings.Contains(sig, needle) {
+		return true
+	}
+	bssList, ok := netEntry["BSSList"].([]any)
+	if !ok {
+		return false
+	}
+	for _, b := range bssList {
+		bd, ok := b.(map[string]any)
+		if !ok {
+			continue
+		}
+		if sig, ok := bd["IPv4NetworkSignature"].(string); ok && strings.Contains(sig, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// lastTouched is the most recent join/association timestamp macOS tracks per
+// known network. Requires at least one of LastAssociatedAt / JoinedByUserAt /
+// JoinedBySystemAt fields specifically about this device joining - rather
+// than trusting the UpdatedAt on its own, since that one could be touched by iCloud syncing.
+// UpdatedAt still contributes to the max once that trust is established.
 func lastTouched(netEntry map[string]any) time.Time {
 	var latest time.Time
-	for _, key := range [...]string{"UpdatedAt", "LastAssociatedAt", "JoinedByUserAt", "JoinedBySystemAt"} {
-		if t, ok := netEntry[key].(time.Time); ok && t.After(latest) {
-			latest = t
+	hasAssociationSignal := false
+	for _, key := range [...]string{"LastAssociatedAt", "JoinedByUserAt", "JoinedBySystemAt"} {
+		if t, ok := netEntry[key].(time.Time); ok {
+			hasAssociationSignal = true
+			if t.After(latest) {
+				latest = t
+			}
 		}
+	}
+	if !hasAssociationSignal {
+		return time.Time{}
+	}
+	if t, ok := netEntry["UpdatedAt"].(time.Time); ok && t.After(latest) {
+		latest = t
 	}
 	return latest
 }
