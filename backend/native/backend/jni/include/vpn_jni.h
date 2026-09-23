@@ -2,11 +2,15 @@
 #include <jni.h>
 #include <stdint.h>
 
-// n must be exactly 64-bit on every platform to match cgo's _GoString_ On Windows specifically,
-// long is 32-bit so we need to use int64_t
+// n must match the width of cgo's GoInt, which cgo sizes off the pointer width of the target
+// , not a fixed 64 bits. intptr_t tracks that same rule on every platform:
+// 64-bit on LP64 (Linux/macOS amd64/arm64) and LLP64 (64-bit Windows, where `long` is 32-bit -
+// the original reason this wasn't just `long`), and 32-bit on ILP32 targets such as
+// armeabi-v7a (32-bit Android). A fixed int64_t here silently corrupts every go_string argument
+// on 32-bit ARM, since cgo's real GoString.n field is only 4 bytes there.
 struct go_string {
     const char *str;
-    int64_t n;
+    intptr_t n;
 };
 
 /* Helpers */
