@@ -6,13 +6,14 @@ import (
 	"net"
 
 	"github.com/wgtunnel/backend/network"
+	"github.com/wgtunnel/backend/vpn/firewall/mark"
 	"golang.org/x/sys/unix"
 )
 
-// BypassSocket is a no-op: macOS has no fwmark. Underlay exclusion is
-// IP_BOUND_IF plus pf pass-to underlay DNS / peer endpoints.
+// BypassSocket marks the socket with mark.DarwinBootstrapTOS via IP_TOS/IPV6_TCLASS 
 func BypassSocket(fd uintptr) error {
-	_ = fd
+	_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TOS, mark.DarwinBootstrapTOS)
+	_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_TCLASS, mark.DarwinBootstrapTOS)
 	return nil
 }
 
@@ -30,6 +31,9 @@ func Dialer(useBypass bool, ifIndex uint32) *net.Dialer {
 		return &net.Dialer{}
 	}
 	return NewBypassDialer(func(fd uintptr) error {
+		if err := BypassSocket(fd); err != nil {
+			return err
+		}
 		idx := ifIndex
 		if idx == 0 {
 			idx = defaultPhysicalIfIndex()
@@ -40,6 +44,9 @@ func Dialer(useBypass bool, ifIndex uint32) *net.Dialer {
 
 func NetworkDialer(ifIndex uint32) *net.Dialer {
 	return NewBypassDialer(func(fd uintptr) error {
+		if err := BypassSocket(fd); err != nil {
+			return err
+		}
 		return bindToDevice(fd, ifIndex)
 	})
 }

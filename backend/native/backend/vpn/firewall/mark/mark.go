@@ -14,3 +14,6 @@ var (
 	// 0x200000 -> [00, 00, 20, 00]
 	LinuxBootstrapMarkBytes = []byte{0x00, 0x00, 0x20, 0x00}
 )
+
+// DarwinBootstrapTOS is the DSCP codepoint
+const DarwinBootstrapTOS = 0x28

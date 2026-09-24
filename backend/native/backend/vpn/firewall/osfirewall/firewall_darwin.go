@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 
 	"github.com/wgtunnel/backend/log"
-	"github.com/wgtunnel/backend/network"
 	"github.com/wgtunnel/backend/vpn/firewall"
+	"github.com/wgtunnel/backend/vpn/firewall/mark"
 	"golang.org/x/net/nettest"
 )
 
@@ -291,6 +291,9 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 		fmt.Fprintf(&b, "pass quick on %s all\n", f.tunName)
 	}
 
+	// For tunnel boostrap socket bypass via IP_TOS/IPV6_TCLASS
+	fmt.Fprintf(&b, "pass out quick tos 0x%02x all\n", mark.DarwinBootstrapTOS)
+
 	b.WriteString("pass out quick proto udp from port 68 to port 67\n")
 	b.WriteString("pass in quick proto udp from port 67 to port 68\n")
 	b.WriteString("pass quick inet proto icmp all\n")
@@ -333,22 +336,6 @@ func (f *DarwinFirewall) passTable() []string {
 	}
 	for _, p := range f.peerPass {
 		add(p)
-	}
-	info := network.GetMonitor().Current()
-	for _, s := range info.DNSServers {
-		host := s
-		if h, _, ok := strings.Cut(s, ":"); ok {
-			host = h
-		}
-		addr, err := netip.ParseAddr(host)
-		if err != nil {
-			continue
-		}
-		bits := 32
-		if addr.Is6() {
-			bits = 128
-		}
-		add(netip.PrefixFrom(addr, bits))
 	}
 	return out
 }
