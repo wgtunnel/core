@@ -144,14 +144,36 @@ func (r *Resolved) RevertLink(ctx context.Context, ifIndex int) error {
 	return nil
 }
 
-// ApplyTunnelDNS configures the TUN link
+// ApplyTunnelDNS configures the TUN link.
 func (r *Resolved) ApplyTunnelDNS(
 	ctx context.Context,
 	ifIndex int,
 	servers []netip.Addr,
 	searchDomains []string,
-	fullTunnel bool,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// DNS is applied wholesale, matching wg-quick's own resolvconf -x behavior
+	domains := make([]Domain, 0, len(searchDomains)+1)
+	for _, d := range searchDomains {
+		domains = append(domains, Domain{Name: d, Routing: false})
+	}
+	if len(servers) > 0 {
+		// SetLinkDomains' D-Bus signature is a bare domain name plus
+		// a separate routing bool. resolved prepends "~" itself internally
+		domains = append(domains, Domain{Name: ".", Routing: true})
+	}
+
+	// Domains before DNS servers: per systemd's VPN integration guidance,
+	// the reverse order can generate DNS traffic through this link before
+	// its routing scope is in place ("the former without the latter has no
+	// effect, but the latter without the former will result in DNS traffic
+	// possibly being generated, in a non-desirable way").
+	if err := r.SetLinkDomains(ctx, ifIndex, domains); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -159,27 +181,14 @@ func (r *Resolved) ApplyTunnelDNS(
 		return err
 	}
 
-	domains := make([]Domain, 0, len(searchDomains)+1)
-	for _, d := range searchDomains {
-		domains = append(domains, Domain{Name: d, Routing: false})
-	}
-	if fullTunnel && len(servers) > 0 {
-		domains = append(domains, Domain{Name: "~.", Routing: true})
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := r.SetLinkDomains(ctx, ifIndex, domains); err != nil {
+	// Set explicitly rather than left to resolved's implicit default, which
+	// depends on exactly which domains are configured. This link should
+	// always catch unmatched queries since DNS is applied wholesale.
+	if err := r.SetLinkDefaultRoute(ctx, ifIndex, true); err != nil {
 		return err
-	}
-
-	if fullTunnel {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := r.SetLinkDefaultRoute(ctx, ifIndex, true); err != nil {
-			return err
-		}
 	}
 	return nil
 }

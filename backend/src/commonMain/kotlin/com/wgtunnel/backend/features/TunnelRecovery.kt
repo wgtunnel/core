@@ -410,7 +410,6 @@ internal class TunnelRecovery(
                 }
             }
 
-
             log.d { "IPv6 recovery watcher started for tunnel $tunnelId" }
 
             while (isActive) {

@@ -13,7 +13,6 @@ internal object DesktopVpnRuntime : VpnRuntime {
         config: Config,
         fakeDns: Boolean,
     ) {
-        // TODO integrate fakeDNS for desktop
         val interfaceName = WireGuardTunnelEngine.interfacePrefix() + "${tunnel.id}"
         val rc = DesktopVpnBackend.createInterface(interfaceName, config.asQuickString())
         if (rc < 0) {
