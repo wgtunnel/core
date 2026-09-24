@@ -296,9 +296,12 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 
 	b.WriteString("pass out quick proto udp from port 68 to port 67\n")
 	b.WriteString("pass in quick proto udp from port 67 to port 68\n")
-	b.WriteString("pass quick inet proto icmp all\n")
+
 	if wantV6 {
-		b.WriteString("pass quick inet6 proto ipv6-icmp all\n")
+		b.WriteString(
+			"pass quick inet6 proto ipv6-icmp icmp6-type " +
+				"{routersolicit, routeradvert, neighbrsolicit, neighbradvert, redir}\n",
+		)
 	}
 	if f.listenPort != 0 {
 		fmt.Fprintf(&b, "pass in quick proto udp to port %d\n", f.listenPort)

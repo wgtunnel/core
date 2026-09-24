@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// BypassSocket marks the socket with mark.DarwinBootstrapTOS via IP_TOS/IPV6_TCLASS 
+// BypassSocket marks the socket with mark.DarwinBootstrapTOS via IP_TOS/IPV6_TCLASS
 func BypassSocket(fd uintptr) error {
 	_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TOS, mark.DarwinBootstrapTOS)
 	_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_TCLASS, mark.DarwinBootstrapTOS)
