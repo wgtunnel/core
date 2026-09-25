@@ -12,7 +12,6 @@ package osfirewall
 import (
 	"fmt"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,10 +24,10 @@ import (
 )
 
 const (
-	tag          = "Firewall"
-	pfAnchorName = "com.wgtunnel"
-	pfAnchorFile = "/var/run/wgtunnel.pf"
-	stockPFConf  = "/etc/pf.conf"
+	tag = "Firewall"
+	// Sub-anchor to not replace main ruleset
+	pfAnchorName = "com.apple/wgtunnel"
+	pfMainAnchor = `anchor "com.apple/*"`
 )
 
 type DarwinFirewall struct {
@@ -48,8 +47,7 @@ type DarwinFirewall struct {
 	blockedV4 atomic.Bool
 	blockedV6 atomic.Bool
 
-	pfToken        string
-	combinedLoaded bool
+	pfToken string
 }
 
 func New() (firewall.Firewall, error) {
@@ -209,68 +207,74 @@ func parsePFToken(out string) string {
 	return ""
 }
 
+// ensureAnchorRef verifies our anchor will actually be evaluated
 func (f *DarwinFirewall) ensureAnchorRef() error {
-	sr, _ := exec.Command("pfctl", "-sr").CombinedOutput()
-	if strings.Contains(string(sr), `anchor "`+pfAnchorName+`"`) {
-		return nil
+	out, err := exec.Command("pfctl", "-sr").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pfctl -sr: %v (%s)", err, cleanPfctlOutput(out))
 	}
-
-	// pfAnchorFile must exist before pfctl runs as it loads it immediately
-	if _, err := os.Stat(pfAnchorFile); os.IsNotExist(err) {
-		if err := os.WriteFile(pfAnchorFile, []byte{}, 0o600); err != nil {
-			return fmt.Errorf("create placeholder %s: %w", pfAnchorFile, err)
+	for _, line := range strings.Split(string(out), "\n") {
+		// HasPrefix on purpose: "scrub-anchor" lines also contain the substring
+		if strings.HasPrefix(strings.TrimSpace(line), pfMainAnchor) {
+			return nil
 		}
 	}
-	stock, err := os.ReadFile(stockPFConf)
-	if err != nil {
-		stock = []byte{}
-	}
-	combined := string(stock)
-	if combined != "" && !strings.HasSuffix(combined, "\n") {
-		combined += "\n"
-	}
-	combined += fmt.Sprintf("anchor \"%s\"\nload anchor \"%s\" from \"%s\"\n", pfAnchorName, pfAnchorName, pfAnchorFile)
-	cmd := exec.Command("pfctl", "-f", "-")
-	cmd.Stdin = strings.NewReader(combined)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("pfctl load combined ruleset: %v (%s)", err, strings.TrimSpace(string(out)))
-	}
-	f.combinedLoaded = true
-	return nil
+	return fmt.Errorf(
+		"main pf ruleset has no %s, so anchor %q would never be evaluated; "+
+			"restore the stock /etc/pf.conf (sudo pfctl -f /etc/pf.conf)",
+		pfMainAnchor, pfAnchorName,
+	)
 }
 
 func (f *DarwinFirewall) loadAnchor(wantV4, wantV6 bool) error {
 	rules := f.buildRules(wantV4, wantV6)
-	if err := os.WriteFile(pfAnchorFile, []byte(rules), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", pfAnchorFile, err)
-	}
-	cmd := exec.Command("pfctl", "-a", pfAnchorName, "-f", pfAnchorFile)
+	// stdin rather than a file: nothing is left on disk to go stale between runs
+	cmd := exec.Command("pfctl", "-a", pfAnchorName, "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("pfctl -a %s -f: %v (%s)", pfAnchorName, err, strings.TrimSpace(string(out)))
+		// pfctl reports syntax errors as <file>:<line>: ... so the numbered ruleset is what
+		// makes the failure actionable
+		log.Error(tag, "pf anchor %s rejected ruleset:\n%s", pfAnchorName, numberLines(rules))
+		return fmt.Errorf("pfctl -a %s -f -: %v (%s)", pfAnchorName, err, cleanPfctlOutput(out))
 	}
 	return nil
 }
 
 func (f *DarwinFirewall) unloadAnchor() error {
 	_, _ = exec.Command("pfctl", "-a", pfAnchorName, "-F", "all").CombinedOutput()
-	_ = os.Remove(pfAnchorFile)
-	if f.combinedLoaded {
-		if _, err := os.Stat(stockPFConf); err == nil {
-			cmd := exec.Command("pfctl", "-f", stockPFConf)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Error(tag, "restore %s: %v (%s)", stockPFConf, err, strings.TrimSpace(string(out)))
-			}
-		}
-		f.combinedLoaded = false
-	}
 	if f.pfToken != "" {
 		_, _ = exec.Command("pfctl", "-X", f.pfToken).CombinedOutput()
 		f.pfToken = ""
 	}
 	return nil
+}
+
+// cleanPfctlOutput drops the lines Apple's pfctl prints on every invocation regardless of
+// outcome
+func cleanPfctlOutput(out []byte) string {
+	var kept []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "",
+			strings.Contains(line, "ALTQ"),
+			strings.Contains(line, "Use of -f option"),
+			strings.Contains(line, "present in the main ruleset"),
+			strings.Contains(line, "See /etc/pf.conf"):
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "; ")
+}
+
+func numberLines(s string) string {
+	var b strings.Builder
+	for i, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		fmt.Fprintf(&b, "%3d  %s\n", i+1, line)
+	}
+	return b.String()
 }
 
 func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
@@ -298,10 +302,10 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 	b.WriteString("pass in quick proto udp from port 67 to port 68\n")
 
 	if wantV6 {
-		b.WriteString(
-			"pass quick inet6 proto ipv6-icmp icmp6-type " +
-				"{routersolicit, routeradvert, neighbrsolicit, neighbradvert, redir}\n",
-		)
+		// NDP: router solicit/advert, neighbor solicit/advert, redirect (RFC 4861 types
+		// 133-137). Numeric so there's no pf keyword spelling to get wrong - an unknown name is
+		// a syntax error that rejects the whole anchor and leaves no kill switch at all.
+		b.WriteString("pass quick inet6 proto 58 icmp6-type { 133, 134, 135, 136, 137 }\n")
 	}
 	if f.listenPort != 0 {
 		fmt.Fprintf(&b, "pass in quick proto udp to port %d\n", f.listenPort)
