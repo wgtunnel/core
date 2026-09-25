@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -80,7 +81,7 @@ func createInterface(ifName string, config string) int32 {
 		mtu = 1280
 	}
 
-	tunDev, err := tun.CreateTUN(ifName, mtu)
+	tunDev, err := tun.CreateTUN(tunCreateName(ifName), mtu)
 	if err != nil {
 		log.Error(tag, "CreateTUN: %v", err)
 		removeStaleTun(ifName)
@@ -101,7 +102,7 @@ func createInterface(ifName string, config string) int32 {
 		return -1
 	}
 
-	rt, err := osrouter.New(ifName, fw, tunDev)
+	rt, err := osrouter.New(tunIfaceName(tunDev, ifName), fw, tunDev)
 	if err != nil {
 		_ = tunDev.Close()
 		cleanupReserve()
@@ -310,3 +311,22 @@ func parseToRouterConfig(conf *wireproxyawg.Configuration, listenPort uint16) (*
 }
 
 func OnTunnelStopped(id int32) { closeDesktopExtras(id) }
+
+// Darwin utun names are assigned by the kernel (utunN). Linux/Windows honor ifName.
+func tunCreateName(requested string) string {
+	if runtime.GOOS == "darwin" {
+		return "utun"
+	}
+	return requested
+}
+
+func tunIfaceName(dev tun.Device, fallback string) string {
+	if dev == nil {
+		return fallback
+	}
+	name, err := dev.Name()
+	if err != nil || name == "" {
+		return fallback
+	}
+	return name
+}

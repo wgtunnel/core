@@ -24,8 +24,8 @@ HOST_ARCH := $(shell uname -m)
 # Project JNI headers (vpn_jni.h)
 JNI_INCLUDES := "-I$(CURDIR)/jni/include"
 
-# JDK JNI headers. Gradle passes JAVA_HOME from the compile toolchain.
-JAVA_HOME ?= $(shell dirname $$(dirname $$(readlink -f $$(which java))))
+# JDK JNI headers
+JAVA_HOME ?= $(subst \,/,$(shell java -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java\.home = //p'))
 
 ifeq ($(HOST_OS),darwin)
   JDK_JNI_CFLAGS := "-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/darwin"
@@ -45,7 +45,7 @@ NDK_GO_ARCH_MAP_arm64 := arm64
 NDK_GO_ARCH_MAP_aarch64 := arm64
 
 ifeq ($(HOST_OS),darwin)
-PLATFORMS := darwin-amd64 darwin-arm64 linux-amd64 windows-amd64 windows-arm64
+PLATFORMS := darwin-amd64 darwin-arm64
 else ifeq ($(OS),Windows_NT)
 
 PLATFORMS := windows-amd64

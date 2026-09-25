@@ -1,4 +1,4 @@
-//go:build unix && !android
+//go:build linux && !android
 
 package bypass
 
