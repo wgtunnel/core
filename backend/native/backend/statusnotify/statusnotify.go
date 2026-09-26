@@ -8,50 +8,56 @@ import "C"
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/wgtunnel/backend/log"
 )
 
 const tag = "StatusNotify"
 
+const noAck = -1
+
+// entry tracks one tunnel. Deliveries are serialized on deliver so Kotlin applies statuses in the
+// order they were sent. Kotlin acks synchronously from inside the notify call, so acked always
+// reflects the last status Kotlin applied.
 type entry struct {
-	mu     sync.Mutex
-	acked  int32
-	hasAck bool
+	deliver sync.Mutex
+	acked   atomic.Int32
 }
 
 var byHandle sync.Map
 
 // Report notifies Kotlin of a new status unless Kotlin has already acked that same code.
+// It is called from the packet hot path, so the unchanged case is a single atomic load.
 func Report(handle int32, code int32) {
 	e := getOrCreate(handle)
-	e.mu.Lock()
-	skip := e.hasAck && e.acked == code
-	acked := e.acked
-	hasAck := e.hasAck
-	e.mu.Unlock()
-	if skip {
+	if e.acked.Load() == code {
 		return
 	}
-	log.Debug(tag, "notify handle=%d code=%d acked=%d hasAck=%v", handle, code, acked, hasAck)
+
+	// Concurrent reports (receive workers, timers, send) must not reach Kotlin out of order, or
+	// the last ack can disagree with the state Kotlin ended up in and hide the next update.
+	e.deliver.Lock()
+	defer e.deliver.Unlock()
+
+	acked := e.acked.Load()
+	if acked == code {
+		return
+	}
+	log.Debug(tag, "notify handle=%d code=%d acked=%d", handle, code, acked)
 	notifyNow(handle, code)
 }
 
-// Ack records that Kotlin applied the status for the tunnel handle.
+// Ack records that Kotlin applied the status for the tunnel handle. It runs inside notifyNow on
+// the delivering goroutine, so it must not take the deliver lock.
 func Ack(handle int32, code int32) {
 	v, ok := byHandle.Load(handle)
 	if !ok {
 		log.Debug(tag, "ack ignored (unknown handle=%d code=%d)", handle, code)
 		return
 	}
-	e := v.(*entry)
-	e.mu.Lock()
-	prev := e.acked
-	had := e.hasAck
-	e.acked = code
-	e.hasAck = true
-	e.mu.Unlock()
-	log.Debug(tag, "ack handle=%d code=%d (was acked=%d hasAck=%v)", handle, code, prev, had)
+	prev := v.(*entry).acked.Swap(code)
+	log.Debug(tag, "ack handle=%d code=%d (was acked=%d)", handle, code, prev)
 }
 
 // Clear drops tracking for a stopped tunnel.
@@ -72,6 +78,7 @@ func getOrCreate(handle int32) *entry {
 		return v.(*entry)
 	}
 	e := &entry{}
+	e.acked.Store(noAck)
 	actual, _ := byHandle.LoadOrStore(handle, e)
 	return actual.(*entry)
 }

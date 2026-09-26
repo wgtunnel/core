@@ -84,7 +84,7 @@ func startProxy(handle int32, ifName string, config string, uapiPath string, byp
 	bind := binder.NewBind(bypass == 1)
 
 	statusCB := func(code device.StatusCode) {
-		// Report to Kotlin with at-least-once delivery until Kotlin acks.
+		// Serialized per tunnel, and skipped when Kotlin already applied this status.
 		statusnotify.Report(handle, int32(code))
 	}
 

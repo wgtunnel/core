@@ -70,7 +70,7 @@ func startVpnDevice(
 	}
 
 	statusCB := func(code device.StatusCode) {
-		// Report to Kotlin with at-least-once delivery until Kotlin acks.
+		// Serialized per tunnel, and skipped when Kotlin already applied this status.
 		statusnotify.Report(tunHandle, int32(code))
 	}
 
