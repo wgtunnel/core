@@ -45,6 +45,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
@@ -74,7 +75,7 @@ class TunnelBackend(
     private val systemDnsResolver = SystemDnsResolver(networkMonitor)
 
     private val _status = MutableStateFlow(BackendStatus())
-    override val status: Flow<BackendStatus> = _status.asStateFlow()
+    override val status: StateFlow<BackendStatus> = _status.asStateFlow()
 
     private val _events = MutableSharedFlow<TunnelEvent>(extraBufferCapacity = 32)
     override val events = _events.asSharedFlow()

@@ -7,6 +7,7 @@ import com.wgtunnel.backend.model.dns.DnsBoostrapMode
 import com.wgtunnel.backend.model.dns.TunnelDnsConfig
 import com.wgtunnel.backend.state.BackendStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 interface Backend {
 
@@ -32,7 +33,7 @@ interface Backend {
 
     suspend fun updateTunnel(tunnel: Tunnel): Result<Unit>
 
-    val status: Flow<BackendStatus>
+    val status: StateFlow<BackendStatus>
 
     val events: Flow<TunnelEvent>
 }
