@@ -48,7 +48,7 @@ func startProxy(handle int32, ifName string, config string, uapiPath string, byp
 
 	conf, err := wireproxyawg.ParseConfigString(config)
 	if err != nil {
-		log.Error(tag, "Invalid config file", err)
+		log.Error(tag, "Invalid config file: %v", err)
 		return -1
 	}
 
@@ -187,7 +187,7 @@ func updateProxyTunnelPeers(tunnelHandle int32, settings string) int32 {
 
 	conf, err := wireproxyawg.ParseConfigString(settings)
 	if err != nil {
-		log.Error(tag, "Invalid config file", err)
+		log.Error(tag, "Invalid config file: %v", err)
 		return -1
 	}
 

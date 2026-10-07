@@ -11,6 +11,7 @@ data class ProxyConfig(val socks5: Socks5? = null, val http: Http? = null) {
             appendLine("BindAddress = ${it.host.asBindAddress(it.port)}")
             it.username?.let { u -> appendLine("Username = $u") }
             it.password?.let { p -> appendLine("Password = $p") }
+            if (it.allowSocks4) appendLine("AllowSocks4 = true")
         }
 
         if (socks5 != null && http != null) {
@@ -30,6 +31,7 @@ data class ProxyConfig(val socks5: Socks5? = null, val http: Http? = null) {
         val port: Int,
         val username: String? = null,
         val password: String? = null,
+        val allowSocks4: Boolean = false,
     )
 
     data class Http(

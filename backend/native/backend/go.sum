@@ -39,8 +39,8 @@ github.com/vishvananda/netns v0.0.5 h1:DfiHV+j8bA32MFM7bfEunvT8IAqQ/NzSJHtcmW5zd
 github.com/vishvananda/netns v0.0.5/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=
 github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20260926105223-c434976f60d4 h1:EoXcTkO6+xm5X9aNQhRVzvxk+PuhFIWH/zGS8NXA7qk=
 github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20260926105223-c434976f60d4/go.mod h1:abvyutF1dGnOSoPJeihboQMCfjSPwFZ1DsPaDfgbqh4=
-github.com/wgtunnel/wireproxy-awg v0.0.0-20261006070100-f4e329d56b6b h1:n76KhqqGouECHH3EXvTdnfpi3e5Mkdf0wClqdsa7nlw=
-github.com/wgtunnel/wireproxy-awg v0.0.0-20261006070100-f4e329d56b6b/go.mod h1:jY8D6fsgnO1rfD3bc0ZC1n3dZgPPIIXx8tVweqwvKB8=
+github.com/wgtunnel/wireproxy-awg v0.0.0-20261007163921-265b69af405d h1:xF98k9FFQJr3lS9GR/g9N3awwjc2Bkg/h0FvtCIdBCQ=
+github.com/wgtunnel/wireproxy-awg v0.0.0-20261007163921-265b69af405d/go.mod h1:jY8D6fsgnO1rfD3bc0ZC1n3dZgPPIIXx8tVweqwvKB8=
 go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
 go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
 go4.org/netipx v0.0.0-20231129151722-fdeea329fbba h1:0b9z3AuHCjxk0x/opv64kcgZLBseWJUpBw5I82+2U4M=
