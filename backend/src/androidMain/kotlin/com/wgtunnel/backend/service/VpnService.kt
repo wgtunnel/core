@@ -200,7 +200,14 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         job.invokeOnCompletion { cause ->
             if (cause != null) { // canceled or failed
                 log.d { "HEV bridge job stopped, shutting down native HEV" }
-                TProxyService.TProxyStopService()
+                // Catches Throwable, not just Exception as a damaged/stale split install can
+                // throw UnsatisfiedLinkError on first touch of TProxyService, and
+                // that must never crash teardown.
+                try {
+                    TProxyService.TProxyStopService()
+                } catch (e: Throwable) {
+                    log.w(e) { "TProxyStopService failed, may already be stopped" }
+                }
             }
             hevBridgeJob = null
         }
@@ -491,9 +498,18 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
         hevBridgeJob?.cancel()
         hevBridgeJob = null
 
+        // TProxyService is an object with a System.loadLibrary init block, so merely
+        // referencing it loads the native lib. Every VPN teardown runs through here even
+        // when HEV was never started, so skip the call entirely unless a bridge target was
+        // actually set
+        if (hevBridgeTarget == null) return
+
         try {
             TProxyService.TProxyStopService()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Catches Throwable, not just Exception as a damaged/stale split install can throw
+            // UnsatisfiedLinkError (an Error) on first touch of TProxyService, and that must
+            // never crash teardown.
             log.w(e) { "TProxyStopService failed, may already be stopped" }
         }
     }
