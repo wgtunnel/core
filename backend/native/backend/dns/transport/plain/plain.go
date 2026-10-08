@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -13,15 +12,19 @@ import (
 	"github.com/wgtunnel/backend/log"
 )
 
+// DefaultEDNSSize is the UDP payload advertised when the path MTU is unknown.
+// 1232 fits an IPv6 datagram on a 1280-byte path (typical WireGuard inner MTU).
+const DefaultEDNSSize = 1232
+
 type Transport struct {
 	Servers     []string // pre-resolved servers
 	Network     string   // udp (default) or tcp
 	Timeout     time.Duration
 	Dialer      *net.Dialer
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
-
-	initOnce sync.Once
-	client   *dns.Client
+	// UDPSize is the EDNS0 requestor payload and the UDP read buffer.
+	// Zero uses DefaultEDNSSize.
+	UDPSize uint16
 }
 
 func New(servers []string, network string) *Transport {
@@ -42,7 +45,22 @@ func New(servers []string, network string) *Transport {
 	}
 }
 
-// normalizePlainServer makes host:port that net.Dial accepts
+// EDNSSizeForMTU is the EDNS0 UDP payload that fits one unfragmented
+// IPv6 packet on a path of the given MTU, capped at DefaultEDNSSize.
+func EDNSSizeForMTU(mtu int) uint16 {
+	if mtu <= 0 {
+		return DefaultEDNSSize
+	}
+	n := mtu - 48 // IPv6 header + UDP
+	if n > DefaultEDNSSize {
+		n = DefaultEDNSSize
+	}
+	if n < dns.MinMsgSize {
+		n = dns.MinMsgSize
+	}
+	return uint16(n)
+}
+
 func normalizePlainServer(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -62,22 +80,11 @@ func normalizePlainServer(s string) string {
 
 func (t *Transport) Type() string { return "plain" }
 
-// init lazily builds the fallback dns.Client used only when no DialContext is
-// supplied (this app always supplies one; this path exists for other embedders
-// of this package). sync.Once makes it safe under concurrent Exchange calls.
-func (t *Transport) init() {
-	t.initOnce.Do(func() {
-		dialer := t.Dialer
-		if dialer == nil {
-			dialer = &net.Dialer{Timeout: t.Timeout}
-		}
-		t.client = &dns.Client{
-			Net:     t.Network,
-			Dialer:  dialer,
-			Timeout: t.Timeout,
-			UDPSize: 4096,
-		}
-	})
+func (t *Transport) ednsSize() uint16 {
+	if t != nil && t.UDPSize >= dns.MinMsgSize {
+		return t.UDPSize
+	}
+	return DefaultEDNSSize
 }
 
 func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
@@ -99,7 +106,6 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 			lastErr = fmt.Errorf("plain: empty response from %s", server)
 			continue
 		}
-		// Any DNS response is valid NOERROR, NXDOMAIN, SERVFAIL, etc
 		return m, nil
 	}
 	if lastErr == nil {
@@ -109,25 +115,99 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 }
 
 func (t *Transport) exchangeOne(ctx context.Context, msg *dns.Msg, server string) (*dns.Msg, error) {
-	if t.DialContext == nil {
-		t.init()
-		m, _, err := t.client.ExchangeContext(ctx, msg, server)
-		return m, err
-	}
+	q := clampEDNS(msg, t.ednsSize())
 	network := t.Network
 	if network == "" {
 		network = "udp"
 	}
-	c, err := t.DialContext(ctx, network, server)
+	if network == "tcp" || network == "tcp-tls" {
+		return t.roundTrip(ctx, network, q, server)
+	}
+
+	resp, err := t.roundTrip(ctx, "udp", q, server)
+	if !needTCPFallback(resp, err) {
+		return resp, err
+	}
+	tcpResp, tcpErr := t.roundTrip(ctx, "tcp", q, server)
+	if tcpErr == nil {
+		return tcpResp, nil
+	}
+	if resp != nil && err == nil {
+		return resp, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
-	conn := &dns.Conn{Conn: c}
-	if err := conn.WriteMsg(msg); err != nil {
-		return nil, err
+	return nil, tcpErr
+}
+
+func needTCPFallback(resp *dns.Msg, err error) bool {
+	if resp != nil && resp.Truncated {
+		return true
 	}
-	return conn.ReadMsg()
+	return err != nil && resp != nil
+}
+
+func (t *Transport) roundTrip(ctx context.Context, network string, msg *dns.Msg, server string) (*dns.Msg, error) {
+	if t.DialContext != nil {
+		c, err := t.DialContext(ctx, network, server)
+		if err != nil {
+			return nil, err
+		}
+		defer c.Close()
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = c.SetDeadline(deadline)
+		}
+		conn := &dns.Conn{Conn: c}
+		if isUDPNetwork(network) {
+			conn.UDPSize = t.ednsSize()
+		}
+		if err := conn.WriteMsg(msg); err != nil {
+			return nil, err
+		}
+		return conn.ReadMsg()
+	}
+
+	dialer := t.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{Timeout: t.Timeout}
+	}
+	client := &dns.Client{
+		Net:     network,
+		Dialer:  dialer,
+		Timeout: t.Timeout,
+		UDPSize: t.ednsSize(),
+	}
+	m, _, err := client.ExchangeContext(ctx, msg, server)
+	return m, err
+}
+
+func isUDPNetwork(network string) bool {
+	return network == "udp" || network == "udp4" || network == "udp6"
+}
+
+// clampEDNS copies msg and replaces any stub OPT with our path-sized payload.
+func clampEDNS(msg *dns.Msg, size uint16) *dns.Msg {
+	var q *dns.Msg
+	if msg != nil {
+		q = msg.Copy()
+	}
+	if q == nil {
+		q = new(dns.Msg)
+	}
+	extra := make([]dns.RR, 0, len(q.Extra))
+	for _, rr := range q.Extra {
+		if rr == nil || rr.Header().Rrtype == dns.TypeOPT {
+			continue
+		}
+		extra = append(extra, rr)
+	}
+	q.Extra = extra
+	if size < dns.MinMsgSize {
+		size = dns.MinMsgSize
+	}
+	q.SetEdns0(size, false)
+	return q
 }
 
 func (t *Transport) Close() error { return nil }

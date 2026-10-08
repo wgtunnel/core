@@ -443,27 +443,14 @@ func (f *WrapperTUN) writeDNSResponse(orig *parsedPacket, resp *dns.Msg, name st
 		mtu = 1280
 	}
 
-	// Largest DNS payload that fits in one unfragmented packet.
-	// buildDNSResponse otherwise cuts mid-record. Truncate on RR
-	// boundaries and set TC so the client retries over TCP (RFC 2181).
-	maxPayload := mtu - 28 // IPv4: 20 IP + 8 UDP
-	if orig.IPVersion == 6 {
-		maxPayload = mtu - 48 // IPv6: 40 IP + 8 UDP
-	}
-
-	respBytes, err := resp.Pack()
+	maxPayload := tunDns.MaxPayload(mtu, orig.IPVersion)
+	respBytes, err := tunDns.PackForTUN(resp, maxPayload)
 	if err != nil {
 		log.Error(tag, "dns: pack %s: %v", name, err)
 		return
 	}
-	if len(respBytes) > maxPayload {
-		resp.Truncate(maxPayload)
-		respBytes, err = resp.Pack()
-		if err != nil {
-			log.Error(tag, "dns: pack truncated %s: %v", name, err)
-			return
-		}
-		log.Debug(tag, "dns: reply name=%s truncated to %d bytes (TC set)", name, len(respBytes))
+	if resp.Truncated {
+		log.Debug(tag, "dns: reply name=%s packed %d bytes (TC set)", name, len(respBytes))
 	}
 
 	outPacket, err := buildDNSResponse(orig, respBytes, mtu)

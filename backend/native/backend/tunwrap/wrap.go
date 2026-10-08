@@ -42,7 +42,11 @@ func MaybeWrapTUNDial(base tun.Device, dnsConfigJSON string, dial DialContextFun
 		local = platform.NewLocalTransport()
 	}
 
-	engine, err := Setup(cfg, local, dial)
+	pathMTU, err := base.MTU()
+	if err != nil || pathMTU <= 0 {
+		pathMTU = 1280
+	}
+	engine, err := Setup(cfg, local, dial, pathMTU)
 	if err != nil {
 		base.Close()
 		return nil, err

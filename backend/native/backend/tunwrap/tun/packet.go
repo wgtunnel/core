@@ -117,7 +117,7 @@ func parseIPv6(packet []byte) (*parsedPacket, error) {
 }
 
 func isDNSQueryToFake(p *parsedPacket, v4, v6 netip.Addr) bool {
-	if p.DstPort != 53 || p.Protocol != 17 {
+	if p.DstPort != 53 || (p.Protocol != 6 && p.Protocol != 17) {
 		return false
 	}
 	if v4.IsValid() && p.DstIP == v4 {
@@ -147,13 +147,7 @@ func buildIPv4DNSResponse(orig *parsedPacket, dnsPayload []byte, mtu int) ([]byt
 	totalLen := ihl + udpLen
 
 	if mtu > 0 && totalLen > mtu {
-		maxPayload := mtu - ihl - 8
-		if maxPayload < 12 {
-			return nil, fmt.Errorf("mtu too small")
-		}
-		dnsPayload = dnsPayload[:maxPayload]
-		udpLen = 8 + len(dnsPayload)
-		totalLen = ihl + udpLen
+		return nil, fmt.Errorf("dns payload %d exceeds mtu %d", totalLen, mtu)
 	}
 
 	out := make([]byte, totalLen)
@@ -189,13 +183,7 @@ func buildIPv6DNSResponse(orig *parsedPacket, dnsPayload []byte, mtu int) ([]byt
 	totalLen := 40 + udpLen
 
 	if mtu > 0 && totalLen > mtu {
-		maxPayload := mtu - 40 - 8
-		if maxPayload < 12 {
-			return nil, fmt.Errorf("mtu too small")
-		}
-		dnsPayload = dnsPayload[:maxPayload]
-		udpLen = 8 + len(dnsPayload)
-		totalLen = 40 + udpLen
+		return nil, fmt.Errorf("dns payload %d exceeds mtu %d", totalLen, mtu)
 	}
 
 	out := make([]byte, totalLen)

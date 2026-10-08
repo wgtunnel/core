@@ -15,7 +15,8 @@ import (
 // Setup builds the hijack DNS engine.
 // local may be nil unless cfg needs local (defaultTransport=="local" or LocalSuffixes).
 // dial, when set, is used for doh/dot/plain upstreams (lockdown/proxy netstack).
-func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport, dial DialContextFunc) (*dns.Engine, error) {
+// pathMTU sizes FakeDNS plain EDNS0; 0 uses plain.DefaultEDNSSize.
+func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport, dial DialContextFunc, pathMTU int) (*dns.Engine, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -47,6 +48,7 @@ func Setup(cfg *dns.TunnelDNSConfig, local transport.Transport, dial DialContext
 		eng.RegisterTransport("dot", t)
 	case "plain":
 		t := plain.New(cfg.Upstream, "udp")
+		t.UDPSize = plain.EDNSSizeForMTU(pathMTU)
 		t.DialContext = dial
 		eng.RegisterTransport("plain", t)
 	case "local":
