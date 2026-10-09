@@ -67,6 +67,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     mode.config,
                     proxyConfig,
                     withBridge = true,
+                    runtimeDnsConfig,
                     dnsJson,
                     outerQuick,
                 )
@@ -94,6 +95,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     mode.config,
                     mode.proxyConfig,
                     withBridge = false,
+                    runtimeDnsConfig,
                     dnsJson,
                     outerQuick,
                 )
@@ -188,10 +190,11 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
         config: Config,
         proxyConfig: ProxyConfig,
         withBridge: Boolean,
+        runtimeDnsConfig: TunnelDnsConfig?,
         dnsConfigJson: String?,
         outerQuick: String?,
     ) {
-        val quickConfig = buildProxiedQuickString(config, proxyConfig)
+        val quickConfig = buildProxiedQuickString(config, proxyConfig, runtimeDnsConfig)
         val rc =
             ProxyBackend.startProxy(
                 handle,
@@ -232,12 +235,27 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                 )
         )
 
-    private fun buildProxiedQuickString(config: Config, proxyConfig: ProxyConfig): String =
+    private fun buildProxiedQuickString(
+        config: Config,
+        proxyConfig: ProxyConfig,
+        runtimeDnsConfig: TunnelDnsConfig?,
+    ): String =
         buildString {
-            append(config.asQuickString())
+            append(configForProxyEngine(config, runtimeDnsConfig).asQuickString())
             append('\n')
             append(proxyConfig.toQuickString())
         }
+
+    private fun configForProxyEngine(config: Config, runtimeDnsConfig: TunnelDnsConfig?): Config {
+        if (runtimeDnsConfig == null) return config
+        val fakeDns =
+            if (config.`interface`.hasIpv6Address) {
+                "${runtimeDnsConfig.fakeDns},${runtimeDnsConfig.fakeDnsV6}"
+            } else {
+                runtimeDnsConfig.fakeDns
+            }
+        return config.copy(`interface` = config.`interface`.copy(dns = fakeDns))
+    }
 
     companion object {
         const val WGT_INTERFACE_PREFIX = "wgtun"
