@@ -88,3 +88,17 @@ func needsLocal(cfg *dns.TunnelDNSConfig) bool {
 	// Inverse split always needs local
 	return strings.EqualFold(strings.TrimSpace(cfg.SplitMode), "tunnel")
 }
+
+// UpstreamFallbackAddrs extracts literal IP addresses from the app's tunnel
+// DNS config upstreams, so the proxy netstack resolver can use the
+// app-configured DNS servers when the WG config itself has none.
+func UpstreamFallbackAddrs(dnsConfigJSON string) []netip.Addr {
+	if strings.TrimSpace(dnsConfigJSON) == "" {
+		return nil
+	}
+	cfg, err := dns.ParseTunnelDNSConfig(dnsConfigJSON)
+	if err != nil || cfg == nil || len(cfg.Upstream) == 0 {
+		return nil
+	}
+	return wrap.UpstreamIPs(cfg.Upstream)
+}

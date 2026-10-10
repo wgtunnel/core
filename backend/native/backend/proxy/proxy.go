@@ -7,6 +7,7 @@ import "C"
 import (
 	"context"
 	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
@@ -23,6 +24,11 @@ import (
 )
 
 const tag = "ProxyBackend"
+
+// DefaultProxyDNS is the last-resort resolver for the proxy netstack when the
+// app passes no DNS at all (DNS mode Off and no DNS in the WG config). The
+// query simply travels through the WireGuard tunnel to the public resolver.
+const DefaultProxyDNS = "1.1.1.1"
 
 var (
 	cancelFuncs          map[int32]context.CancelFunc
@@ -50,6 +56,18 @@ func startProxy(handle int32, ifName string, config string, uapiPath string, byp
 	if err != nil {
 		log.Error(tag, "Invalid config file: %v", err)
 		return -1
+	}
+
+	// A WG config without DNS leaves the proxy netstack and TUNResolver with
+	// no resolver, so every hostname dial fails. Pull the resolver from the
+	// app's tunnel DNS config first, so the app-configured upstreams are used;
+	// fall back to a public resolver only when the app passes no usable DNS.
+	if len(conf.Device.DNS) == 0 {
+		if addrs := tunwrap.UpstreamFallbackAddrs(dnsConfig); len(addrs) > 0 {
+			conf.Device.DNS = addrs
+		} else if defaultDNS, parseErr := netip.ParseAddr(DefaultProxyDNS); parseErr == nil {
+			conf.Device.DNS = []netip.Addr{defaultDNS}
+		}
 	}
 
 	outer, innerBind, err := hop.StartOuterIfSet(outerConfig, bypass == 1)
