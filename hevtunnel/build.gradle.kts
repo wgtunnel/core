@@ -7,9 +7,7 @@ plugins {
 android {
     namespace = "com.wgtunnel.hevtunnel"
 
-    compileSdk {
-        version = release(libs.versions.android.compileSdk.get().toInt())
-    }
+    compileSdk { version = release(libs.versions.android.compileSdk.get().toInt()) }
 
     ndkVersion = libs.versions.android.ndk.get()
 
@@ -19,13 +17,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
 
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-        }
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
 
         externalNativeBuild {
             ndkBuild {
-                arguments.add("APP_CFLAGS+=-DPKGNAME=com/wgtunnel/hevtunnel -ffile-prefix-map=${rootDir}=.")
+                arguments.add(
+                    "APP_CFLAGS+=-DPKGNAME=com/wgtunnel/hevtunnel -ffile-prefix-map=${rootDir}=."
+                )
                 arguments.add("APP_LDFLAGS+=-Wl,--build-id=none")
             }
         }
@@ -36,16 +34,12 @@ android {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
     }
 
-    externalNativeBuild {
-        ndkBuild {
-            path = file("src/main/jni/Android.mk")
-        }
-    }
+    externalNativeBuild { ndkBuild { path = file("src/main/jni/Android.mk") } }
 }
 
 signing {
@@ -61,6 +55,7 @@ signing {
         useInMemoryPgpKeys(inMemoryKey.get(), password.orNull.orEmpty())
     }
 }
+
 mavenPublishing {
     publishToMavenCentral()
     signAllPublications()

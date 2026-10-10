@@ -34,6 +34,7 @@ import com.wgtunnel.backend.util.withEndpointsFrom
 import com.wgtunnel.backend.util.withResolvedEndpoints
 import com.wgtunnel.parser.ActiveConfig
 import com.wgtunnel.parser.Config
+import com.wgtunnel.parser.MultihopMtu
 import com.wgtunnel.parser.PeerSection
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
@@ -157,6 +158,11 @@ class TunnelBackend(
                 log.w { "Tunnel ${tunnel.id} already running" }
                 return@runCatching
             }
+
+            // For multihop we grow the entry MTU to carry a full exit packet, capped to a physical
+            // ceiling. No-op for single hop.
+            val (balancedConfig, outerConfig) = MultihopMtu.balance(mode.config, outerConfig)
+            val mode = mode.withConfig(balancedConfig)
 
             addOrReplaceActiveTunnel(
                 tunnel.id,
@@ -822,8 +828,7 @@ class TunnelBackend(
         mode: BackendMode,
     ): Tunnel.Feature.Recovery {
         val hasDynamicEndpoints =
-            mode.config.hasDynamicEndpoints() ||
-                (active.outerConfig?.hasDynamicEndpoints() == true)
+            mode.config.hasDynamicEndpoints() || (active.outerConfig?.hasDynamicEndpoints() == true)
         val feature =
             active.tunnel?.features?.filterIsInstance<Tunnel.Feature.Recovery>()?.firstOrNull()
                 ?: TunnelRecovery.IDLE_RECOVERY

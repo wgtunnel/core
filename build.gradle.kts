@@ -2,7 +2,7 @@ import com.ncorti.ktfmt.gradle.tasks.KtfmtFormatTask
 
 plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library) apply false
-    alias(libs.plugins.kotlinMultiplatform) apply  false
+    alias(libs.plugins.kotlinMultiplatform) apply false
     alias(libs.plugins.vanniktech.mavenPublish) apply false
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.jetbrains.kotlin.jvm) apply false
@@ -11,6 +11,7 @@ plugins {
 
 val jvmVersion = libs.versions.jvm.get().toInt()
 val libVersion = libs.versions.lib.get()
+
 version = libVersion
 
 allprojects {
@@ -29,19 +30,20 @@ allprojects {
     }
 }
 
-
 subprojects {
-    apply {
-        plugin(rootProject.libs.plugins.ktfmt.get().pluginId)
-    }
+    apply { plugin(rootProject.libs.plugins.ktfmt.get().pluginId) }
 
     tasks.register<KtfmtFormatTask>("format") {
         source = project.fileTree(rootDir)
-        include("**/*.kt")
-        exclude("**/build/**", ".*generated.*", "**/winsw/**", "**/amneziawg-tools/**", "**/.gradle/**")
+        include("**/*.kt", "**/*.kts")
+        exclude(
+            "**/build/**",
+            ".*generated.*",
+            "**/winsw/**",
+            "**/amneziawg-tools/**",
+            "**/.gradle/**",
+        )
     }
 
-    ktfmt {
-        kotlinLangStyle()
-    }
+    ktfmt { kotlinLangStyle() }
 }

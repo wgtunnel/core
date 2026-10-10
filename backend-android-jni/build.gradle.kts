@@ -6,27 +6,19 @@ plugins {
 
 android {
     namespace = "com.wgtunnel.backend.android.jni"
-    compileSdk {
-        version = release(libs.versions.android.compileSdk.get().toInt())
-    }
+    compileSdk { version = release(libs.versions.android.compileSdk.get().toInt()) }
 
     ndkVersion = libs.versions.android.ndk.get()
 
     defaultConfig {
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-        }
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
         minSdk = libs.versions.android.minSdk.get().toInt()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("../backend/native/android/CMakeLists.txt")
-        }
-    }
+    externalNativeBuild { cmake { path = file("../backend/native/android/CMakeLists.txt") } }
 
     val basePackageName = namespace
 
@@ -42,18 +34,12 @@ android {
         }
 
         release {
-            externalNativeBuild {
-                cmake {
-                    arguments("-DANDROID_PACKAGE_NAME=$basePackageName")
-                }
-            }
+            externalNativeBuild { cmake { arguments("-DANDROID_PACKAGE_NAME=$basePackageName") } }
         }
 
         debug {
             externalNativeBuild {
-                cmake {
-                    arguments("-DANDROID_PACKAGE_NAME=$basePackageName.debug")
-                }
+                cmake { arguments("-DANDROID_PACKAGE_NAME=$basePackageName.debug") }
             }
         }
     }
@@ -86,6 +72,7 @@ signing {
         useInMemoryPgpKeys(inMemoryKey.get(), password.orNull.orEmpty())
     }
 }
+
 mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
@@ -117,6 +104,3 @@ mavenPublishing {
         }
     }
 }
-
-
-

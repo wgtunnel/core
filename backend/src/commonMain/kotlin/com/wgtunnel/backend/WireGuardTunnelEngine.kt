@@ -4,6 +4,7 @@ import com.wgtunnel.backend.exception.BackendException
 import com.wgtunnel.backend.model.BackendMode
 import com.wgtunnel.backend.model.EngineStartResult
 import com.wgtunnel.backend.model.ProxyConfig
+import com.wgtunnel.backend.model.dns.ForeignDnsPolicy
 import com.wgtunnel.backend.model.dns.TunnelDnsConfig
 import com.wgtunnel.backend.service.RuntimeManager
 import com.wgtunnel.backend.service.VpnRuntime
@@ -57,6 +58,13 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     }
                 }
         val dnsJson = runtimeDnsConfig?.let { json.encodeToString(it) }
+        // Proxy mode has no "other app leaking" surface as every byte tunwrap's wrapped TUN
+        // sees is traffic the user's own chosen client explicitly relayed through us. Block
+        // and Allow features are not meaningful in this mode.
+        val proxyDnsJson =
+            runtimeDnsConfig?.copy(foreignDnsPolicy = ForeignDnsPolicy.REDIRECT)?.let {
+                json.encodeToString(it)
+            }
 
         when (mode) {
             is BackendMode.Proxy.KillSwitchPrimary -> {
@@ -68,7 +76,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     proxyConfig,
                     withBridge = true,
                     runtimeDnsConfig,
-                    dnsJson,
+                    proxyDnsJson,
                     outerQuick,
                 )
             }
@@ -96,7 +104,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     mode.proxyConfig,
                     withBridge = false,
                     runtimeDnsConfig,
-                    dnsJson,
+                    proxyDnsJson,
                     outerQuick,
                 )
             }
@@ -239,12 +247,11 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
         config: Config,
         proxyConfig: ProxyConfig,
         runtimeDnsConfig: TunnelDnsConfig?,
-    ): String =
-        buildString {
-            append(configForProxyEngine(config, runtimeDnsConfig).asQuickString())
-            append('\n')
-            append(proxyConfig.toQuickString())
-        }
+    ): String = buildString {
+        append(configForProxyEngine(config, runtimeDnsConfig).asQuickString())
+        append('\n')
+        append(proxyConfig.toQuickString())
+    }
 
     private fun configForProxyEngine(config: Config, runtimeDnsConfig: TunnelDnsConfig?): Config {
         if (runtimeDnsConfig == null) return config

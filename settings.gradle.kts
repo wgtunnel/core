@@ -5,9 +5,8 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
-plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
-}
+
+plugins { id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0" }
 
 dependencyResolutionManagement {
     repositories {
@@ -19,8 +18,11 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "core"
+
 include(":backend")
+
 include(":hevtunnel")
+
 include(":parser")
+
 include(":backend-android-jni")
- 

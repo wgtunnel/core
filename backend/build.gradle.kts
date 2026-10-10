@@ -27,18 +27,13 @@ kotlin {
             }
         }
 
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }
-
+        withDeviceTestBuilder { sourceSetTreeName = "test" }
     }
 
     targets.configureEach {
         compilations.configureEach {
             compileTaskProvider.configure {
-                compilerOptions {
-                    freeCompilerArgs.add("-Xexpect-actual-classes")
-                }
+                compilerOptions { freeCompilerArgs.add("-Xexpect-actual-classes") }
             }
         }
     }
@@ -63,12 +58,8 @@ kotlin {
 
             // Util
             implementation(libs.ipaddress)
-
         }
-        jvmMain.dependencies {
-            implementation(libs.nucleus.core.runtime)
-
-        }
+        jvmMain.dependencies { implementation(libs.nucleus.core.runtime) }
     }
 }
 
@@ -134,46 +125,49 @@ val jdkHome =
         }
         .map { it.metadata.installationPath.asFile.absolutePath }
 
-val buildDesktopNatives = tasks.register<Exec>("buildDesktopNatives") {
-    group = "build"
-    description = "Build desktop JNI shared libraries into jvmMain/resources"
-    workingDir = goDir.asFile
+val buildDesktopNatives =
+    tasks.register<Exec>("buildDesktopNatives") {
+        group = "build"
+        description = "Build desktop JNI shared libraries into jvmMain/resources"
+        workingDir = goDir.asFile
 
-    inputs.files(
-        fileTree(goDir.asFile) {
-            include("**/*.go", "**/go.mod", "**/go.sum", "Makefile", "jni/**")
-            exclude("out/**", "build/**", ".gocache/**")
-        }
-    ).withPathSensitivity(PathSensitivity.RELATIVE)
+        inputs
+            .files(
+                fileTree(goDir.asFile) {
+                    include("**/*.go", "**/go.mod", "**/go.sum", "Makefile", "jni/**")
+                    exclude("out/**", "build/**", ".gocache/**")
+                }
+            )
+            .withPathSensitivity(PathSensitivity.RELATIVE)
 
-    outputs.dir(jvmNativeResources)
+        outputs.dir(jvmNativeResources)
 
-    environment(
-        "JAVA_HOME" to jdkHome.get(),
-        "RESOURCEDIR" to jvmNativeResources.asFile.absolutePath,
-        "DESTDIR" to goDir.dir("out").asFile.absolutePath,
-    )
+        environment(
+            "JAVA_HOME" to jdkHome.get(),
+            "RESOURCEDIR" to jvmNativeResources.asFile.absolutePath,
+            "DESTDIR" to goDir.dir("out").asFile.absolutePath,
+        )
 
-    commandLine("make", "desktop")
-}
+        commandLine("make", "desktop")
+    }
 
 tasks.named("jvmProcessResources") { dependsOn(buildDesktopNatives) }
+
 tasks.named("compileKotlinJvm") { dependsOn(buildDesktopNatives) }
 
-val cleanDesktopNatives = tasks.register<Exec>("cleanDesktopNatives") {
-    description = "Cleaning making"
-    workingDir = goDir.asFile
-    commandLine("make", "clean")
-    isIgnoreExitValue = true
-}
+val cleanDesktopNatives =
+    tasks.register<Exec>("cleanDesktopNatives") {
+        description = "Cleaning making"
+        workingDir = goDir.asFile
+        commandLine("make", "clean")
+        isIgnoreExitValue = true
+    }
 
 tasks.named<Delete>("clean") {
     dependsOn(cleanDesktopNatives)
     delete(
         goDir.dir("build"),
         goDir.dir("out"),
-        fileTree(jvmNativeResources) {
-            include("**/libwg.so", "**/wg.dll", "**/libwg.dylib")
-        }
+        fileTree(jvmNativeResources) { include("**/libwg.so", "**/wg.dll", "**/libwg.dylib") },
     )
 }
