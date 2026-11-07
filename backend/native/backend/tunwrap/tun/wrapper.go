@@ -27,7 +27,7 @@ const (
 	dnsSemWait       = 2 * time.Second
 	maxCacheEntries  = 512
 	dnsQueryTimeout  = 5 * time.Second
-	negativeCacheTTL = 10 * time.Second // used for SERVFAIL and NXDOMAIN responses
+	noHandleCacheTTL = 30 * time.Second
 	tag              = "WrapperTun"
 )
 
@@ -403,15 +403,16 @@ func (f *WrapperTUN) resolveAndReply(orig *parsedPacket) {
 			fail := new(dns.Msg)
 			fail.SetRcode(msg, dns.RcodeServerFailure)
 
-			ttl := negativeCacheTTL
+			// A missing underlay handle stays broken until the VPN network
+			// appears, so that failure is cached. A dial or read error is not
+			// a DNS answer so caching it as SERVFAIL keeps the name broken
+			// after a fresh connection would already succeed.
 			if local.IsNoHandleError(err) {
 				log.Debug(tag, "dns: reply name=%s rcode=SERVFAIL (local no handle)", logName)
-				ttl = 30 * time.Second // give more breathing room when handle is missing
+				f.cachePut(q, fail, noHandleCacheTTL)
 			} else {
 				log.Error(tag, "dns: exchange name=%s err=%v → SERVFAIL", logName, err)
 			}
-
-			f.cachePut(q, fail, ttl)
 			return fail, nil
 		}
 

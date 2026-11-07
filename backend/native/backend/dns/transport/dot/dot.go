@@ -17,6 +17,14 @@ import (
 // upstream server. Bounded so a burst of concurrent lookups doesn't accumulate connections indefinitely.
 const maxIdleConnsPerServer = 8
 
+// maxPooledIdle is how long a warm DoT connection may sit unused.
+const maxPooledIdle = 2 * time.Second
+
+type idleConn struct {
+	conn     *dns.Conn
+	lastUsed time.Time
+}
+
 type Transport struct {
 	Servers     []string // should be pre-resolved
 	ServerName  string   // TLS SNI
@@ -29,7 +37,7 @@ type Transport struct {
 	client   *dns.Client
 
 	poolMu sync.Mutex
-	pools  map[string]chan *dns.Conn // server -> idle connections
+	pools  map[string]chan *idleConn // server -> idle connections
 	closed bool
 }
 
@@ -38,7 +46,7 @@ func New(servers []string, serverName string) *Transport {
 		Servers:    servers,
 		ServerName: serverName,
 		Timeout:    6 * time.Second,
-		pools:      make(map[string]chan *dns.Conn),
+		pools:      make(map[string]chan *idleConn),
 	}
 }
 
@@ -98,7 +106,7 @@ func (t *Transport) Exchange(ctx context.Context, msg *dns.Msg) (*dns.Msg, error
 }
 
 // exchangePooled reuses a warm TLS connection to server when one is idle in the
-// pool, avoiding a fresh TCP+TLS handshake on every query
+// pool, avoiding a fresh TCP+TLS handshake on every query.
 func (t *Transport) exchangePooled(ctx context.Context, msg *dns.Msg, server string) (*dns.Msg, error) {
 	conn, reused, err := t.checkoutConn(ctx, server)
 	if err != nil {
@@ -108,28 +116,37 @@ func (t *Transport) exchangePooled(ctx context.Context, msg *dns.Msg, server str
 	m, err := t.exchangeOnConn(ctx, conn, msg)
 	if err != nil {
 		_ = conn.Close()
-		// A pooled connection may have been closed/idled-out by the server
-		// between checkout and use; retry once against a fresh connection
-		// before giving up, but only for the reused case to avoid masking a
-		// real fresh-dial failure as a silent extra round trip.
-		if reused {
-			conn, _, dialErr := t.checkoutConn(ctx, server)
-			if dialErr != nil {
-				return nil, err
-			}
-			m, err = t.exchangeOnConn(ctx, conn, msg)
-			if err != nil {
-				_ = conn.Close()
-				return nil, err
-			}
-			t.releaseConn(server, conn)
-			return m, nil
+		// A reused socket can fail because the server already closed it. The
+		// other idle sockets from that burst usually died with it, so drop
+		// them and dial once.
+		if !reused || ctx.Err() != nil {
+			return nil, err
 		}
-		return nil, err
+		t.discardIdle(server)
+		fresh, dialErr := t.dialConn(ctx, server)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		m, err = t.exchangeOnConn(ctx, fresh, msg)
+		if err != nil {
+			_ = fresh.Close()
+			return nil, err
+		}
+		return t.finishConn(ctx, server, fresh, m)
 	}
+	return t.finishConn(ctx, server, conn, m)
+}
 
+// finishConn returns msg to the caller. The socket is pooled only when ctx is
+// still active. A read can succeed and the context can end immediately
+// afterward. That answer is still valid.
+func (t *Transport) finishConn(ctx context.Context, server string, conn *dns.Conn, msg *dns.Msg) (*dns.Msg, error) {
+	if ctx.Err() != nil {
+		_ = conn.Close()
+		return msg, nil
+	}
 	t.releaseConn(server, conn)
-	return m, nil
+	return msg, nil
 }
 
 // exchangeOnConn honors ctx in addition to the transport's own Timeout, so a
@@ -144,42 +161,58 @@ func (t *Transport) exchangeOnConn(ctx context.Context, conn *dns.Conn, msg *dns
 		return nil, err
 	}
 
-	done := make(chan struct{})
-	defer close(done)
+	// Stopped is closed only after the watcher has chosen a branch.
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		select {
 		case <-ctx.Done():
 			// Unblocks WriteMsg/ReadMsg immediately instead of waiting out
 			// the socket deadline as the caller has already given up.
 			_ = conn.Close()
-		case <-done:
+		case <-stop:
 		}
 	}()
 
-	if err := conn.WriteMsg(msg); err != nil {
-		return nil, err
+	writeErr := conn.WriteMsg(msg)
+	var resp *dns.Msg
+	var readErr error
+	if writeErr == nil {
+		resp, readErr = conn.ReadMsg()
 	}
-	return conn.ReadMsg()
+	close(stop)
+	<-stopped
+	if writeErr != nil {
+		return nil, writeErr
+	}
+	return resp, readErr
 }
 
 func (t *Transport) checkoutConn(ctx context.Context, server string) (conn *dns.Conn, reused bool, err error) {
-	t.poolMu.Lock()
-	pool := t.pools[server]
-	if pool == nil {
-		pool = make(chan *dns.Conn, maxIdleConnsPerServer)
-		t.pools[server] = pool
+	pool := t.poolFor(server)
+	for {
+		select {
+		case c := <-pool:
+			if c == nil || c.conn == nil {
+				return nil, false, fmt.Errorf("dot: transport closed")
+			}
+			if time.Since(c.lastUsed) > maxPooledIdle {
+				_ = c.conn.Close()
+				continue
+			}
+			return c.conn, true, nil
+		default:
+			conn, err = t.dialConn(ctx, server)
+			return conn, false, err
+		}
 	}
-	t.poolMu.Unlock()
+}
 
-	select {
-	case c := <-pool:
-		return c, true, nil
-	default:
-	}
-
+func (t *Transport) dialConn(ctx context.Context, server string) (*dns.Conn, error) {
 	raw, err := t.DialContext(ctx, "tcp", server)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	tlsConn := tls.Client(raw, &tls.Config{
 		ServerName: t.ServerName,
@@ -188,9 +221,20 @@ func (t *Transport) checkoutConn(ctx context.Context, server string) (conn *dns.
 	})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
-		return nil, false, err
+		return nil, err
 	}
-	return &dns.Conn{Conn: tlsConn}, false, nil
+	return &dns.Conn{Conn: tlsConn}, nil
+}
+
+func (t *Transport) poolFor(server string) chan *idleConn {
+	t.poolMu.Lock()
+	defer t.poolMu.Unlock()
+	pool := t.pools[server]
+	if pool == nil {
+		pool = make(chan *idleConn, maxIdleConnsPerServer)
+		t.pools[server] = pool
+	}
+	return pool
 }
 
 // releaseConn returns conn to the idle pool, or closes it if the transport has
@@ -198,17 +242,39 @@ func (t *Transport) checkoutConn(ctx context.Context, server string) (conn *dns.
 func (t *Transport) releaseConn(server string, conn *dns.Conn) {
 	t.poolMu.Lock()
 	pool := t.pools[server]
-	closed := t.closed
+	pooled := false
+	if !t.closed && pool != nil {
+		select {
+		case pool <- &idleConn{conn: conn, lastUsed: time.Now()}:
+			pooled = true
+		default:
+		}
+	}
 	t.poolMu.Unlock()
-
-	if closed || pool == nil {
+	if !pooled {
 		_ = conn.Close()
+	}
+}
+
+// discardIdle closes every idle connection for server.
+func (t *Transport) discardIdle(server string) {
+	t.poolMu.Lock()
+	pool := t.pools[server]
+	t.poolMu.Unlock()
+	if pool == nil {
 		return
 	}
-	select {
-	case pool <- conn:
-	default:
-		_ = conn.Close()
+	for {
+		select {
+		case c := <-pool:
+			// A closed pool delivers nil forever. Stop instead of spinning.
+			if c == nil || c.conn == nil {
+				return
+			}
+			_ = c.conn.Close()
+		default:
+			return
+		}
 	}
 }
 
@@ -216,13 +282,15 @@ func (t *Transport) Close() error {
 	t.poolMu.Lock()
 	t.closed = true
 	pools := t.pools
-	t.pools = make(map[string]chan *dns.Conn)
+	t.pools = make(map[string]chan *idleConn)
 	t.poolMu.Unlock()
 
 	for _, pool := range pools {
 		close(pool)
-		for conn := range pool {
-			_ = conn.Close()
+		for c := range pool {
+			if c != nil && c.conn != nil {
+				_ = c.conn.Close()
+			}
 		}
 	}
 	return nil
