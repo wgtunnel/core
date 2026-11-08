@@ -1,17 +1,17 @@
 [versions]
-agp = "9.4.1"
+agp = "9.5.1"
 kotlin = "2.4.21"
 android-minSdk = "26"
 android-compileSdk = "37"
 android-ndk = "28.2.13676358"
 jvm = "21"
-lib = "1.9.10"
+lib = "1.9.11"
 nucleusCoreRuntime = "2.5.18"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.12.0"
  # Corutines
 kotlinx-coroutines = "1.11.0"
-ktfmt = "0.27.0"
+ktfmt = "0.28.0"
 
 kermit = "2.2.0"
 
