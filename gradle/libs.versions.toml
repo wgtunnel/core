@@ -7,7 +7,6 @@ android-ndk = "28.2.13676358"
 jvm = "21"
 lib = "1.9.10"
 nucleusCoreRuntime = "2.5.18"
-tink = "1.24.0"
 vanniktechMavenPublish = "0.37.0"
 kotlinx-serialization = "1.12.0"
  # Corutines
@@ -60,7 +59,6 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 nucleus-core-runtime = { module = "dev.nucleusframework:nucleus.core-runtime", version.ref = "nucleusCoreRuntime" }
-tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 
 [plugins]
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }

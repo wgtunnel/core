@@ -1,6 +1,5 @@
 package com.wgtunnel.parser.crypto
 
-import com.google.crypto.tink.subtle.X25519
 import java.security.SecureRandom
 import java.util.Base64
 import kotlin.experimental.and
@@ -41,7 +40,8 @@ class Key private constructor(private val key: ByteArray) {
         }
 
         fun generatePublicKey(privateKey: Key): Key {
-            val pub = X25519.publicFromPrivate(privateKey.getBytes())
+            val pub = ByteArray(Format.BINARY.length)
+            Curve25519.eval(pub, 0, privateKey.getBytes(), null)
             return Key(pub)
         }
     }

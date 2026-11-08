@@ -11,7 +11,6 @@ dependencies {
     implementation(libs.kotlinx.serialization.core)
 
     implementation(libs.crypto.rand)
-    implementation(libs.tink)
 
     implementation(libs.kotlinx.datetime)
     implementation(libs.commons.validator)
@@ -30,8 +29,8 @@ signing {
             .gradleProperty("signingInMemoryKeyPassword")
             .orElse(providers.gradleProperty("signing.password"))
             .orElse(providers.environmentVariable("GPG_PASS"))
-    // Parser depends on BouncyCastle (X25519). In-memory PGP signing also uses BC, and
-    // that mix produces .asc files Maven Central rejects. Use gpg on CI instead.
+    // In-memory PGP signing uses BouncyCastle and produces .asc files Maven Central
+    // rejects. Use gpg on CI instead.
     val useGpgCmd = providers.environmentVariable("SIGNING_USE_GPG_CMD").orNull == "true"
     if (useGpgCmd) {
         extra["signing.gnupg.passphrase"] = password.orNull.orEmpty()

@@ -20,6 +20,13 @@ github.com/tailscale/wf
   https://github.com/tailscale/wf
   See LICENSES/BSD-3-Clause.txt
 
+Curve25519 (parser/src/main/java/com/wgtunnel/parser/crypto/Curve25519.java)
+  From wireguard-android[](https://git.zx2c4.com/wireguard-android), imported there from noise-java
+  Copyright (c) 2016 Southern Storm Software, Pty Ltd.
+  Copyright (c) 2017-2025 WireGuard LLC
+  Licensed under the Apache License 2.0
+  See LICENSES/Apache-2.0.txt
+
 amneziawg-go
   Copyright (c) AmneziaVPN and contributors
   Licensed under the MIT License
