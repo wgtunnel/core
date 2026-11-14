@@ -88,7 +88,7 @@ jobs:
       - name: Verify Gradle Wrapper
         uses: gradle/actions/wrapper-validation@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: macos-natives
           path: backend/src/jvmMain/resources/natives
