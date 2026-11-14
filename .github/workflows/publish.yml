@@ -43,7 +43,7 @@ jobs:
       - name: Build macOS native libraries (darwin-x64, darwin-aarch64)
         run: ./gradlew :backend:buildDesktopNatives --no-configuration-cache --stacktrace --no-daemon
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-natives
           if-no-files-found: error
