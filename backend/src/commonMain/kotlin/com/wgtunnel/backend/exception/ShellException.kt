@@ -17,7 +17,7 @@ sealed class ShellException(
                 if (!stderr.isNullOrBlank()) {
                     append("\n$stderr")
                 }
-            }
+            },
         )
 
     class CommandTimedOut(val command: String, val timeoutMs: Long) :

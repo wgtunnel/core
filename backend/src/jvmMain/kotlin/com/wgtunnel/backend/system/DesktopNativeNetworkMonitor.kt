@@ -30,7 +30,7 @@ class DesktopNativeNetworkMonitor(
                 runCatching {
                     val current = NetworkMonitorBridge.current()
                     NetworkMonitorBridge.onNativeInfo(
-                        json.encodeToString(NetworkInfoDto.serializer(), current)
+                        json.encodeToString(NetworkInfoDto.serializer(), current),
                     )
                 }
                     .onFailure { log.w(it) { "Failed to seed network monitor snapshot" } }

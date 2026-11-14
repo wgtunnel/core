@@ -49,7 +49,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                             mode.config.parseDnsServersOnly().map { DnsHostUtils.ensurePort53(it) }
                         if (servers.isEmpty()) {
                             throw BackendException.ConfigMissingDNS(
-                                "Kill switch requires at least one DNS server in the tunnel config"
+                                "Kill switch requires at least one DNS server in the tunnel config",
                             )
                         }
                         TunnelDnsConfig(defaultTransport = "plain", upstream = servers)
@@ -240,7 +240,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     port = PortUtils.getAvailableTcpPort(VpnRuntime.HEV_BRIDGE_TRAFFIC_TAG),
                     username = LOCKDOWN_USERNAME,
                     password = UUID.randomUUID().toString(),
-                )
+                ),
         )
 
     private fun buildProxiedQuickString(

@@ -750,7 +750,7 @@ class TunnelBackend(
                         enabled = false,
                         config = null,
                         primaryTunnel = it.killSwitch.primaryTunnel,
-                    )
+                    ),
             )
         }
     }
@@ -901,11 +901,11 @@ class TunnelBackend(
                                             TunnelRecovery.Snapshot(
                                                 shouldArmFailureRecovery =
                                                     active.shouldArmFailureRecovery(
-                                                        network.isUsable
+                                                        network.isUsable,
                                                     ),
                                                 shouldKeepFailureRecoveryEpisode =
                                                     active.shouldKeepFailureRecoveryEpisode(
-                                                        network.isUsable
+                                                        network.isUsable,
                                                     ),
                                                 transportHealthy = active.isTransportHealthy(),
                                                 bootstrapPending =
@@ -961,7 +961,7 @@ class TunnelBackend(
                                 }
 
                                 override fun updateActiveTunnel(
-                                    transform: (ActiveTunnel) -> ActiveTunnel
+                                    transform: (ActiveTunnel) -> ActiveTunnel,
                                 ) {
                                     this@TunnelBackend.updateActiveTunnel(
                                         tunnel.id,

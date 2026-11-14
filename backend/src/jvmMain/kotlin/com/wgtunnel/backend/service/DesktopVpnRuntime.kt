@@ -18,7 +18,7 @@ internal object DesktopVpnRuntime : VpnRuntime {
         if (rc < 0) {
             DesktopVpnBackend.destroyInterface(interfaceName)
             throw BackendException.InternalError(
-                "Failed to create tun interface $interfaceName (native code $rc)"
+                "Failed to create tun interface $interfaceName (native code $rc)",
             )
         }
     }

@@ -5,7 +5,7 @@ import com.wgtunnel.backend.model.dns.ResolvedHost
 import com.wgtunnel.parser.ActiveConfig
 
 internal fun BackendMode.rebuildModeWithHostMap(
-    hostMap: Map<PublicKey, ResolvedHost>
+    hostMap: Map<PublicKey, ResolvedHost>,
 ): BackendMode {
     val resolvedPeers = config.buildResolvedPeers(hostMap)
     val resolvedConfig = config.copy(peers = resolvedPeers)

@@ -136,7 +136,7 @@ val buildDesktopNatives =
                 fileTree(goDir.asFile) {
                     include("**/*.go", "**/go.mod", "**/go.sum", "Makefile", "jni/**")
                     exclude("out/**", "build/**", ".gocache/**")
-                }
+                },
             )
             .withPathSensitivity(PathSensitivity.RELATIVE)
 

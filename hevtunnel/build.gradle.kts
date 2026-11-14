@@ -22,7 +22,7 @@ android {
         externalNativeBuild {
             ndkBuild {
                 arguments.add(
-                    "APP_CFLAGS+=-DPKGNAME=com/wgtunnel/hevtunnel -ffile-prefix-map=${rootDir}=."
+                    "APP_CFLAGS+=-DPKGNAME=com/wgtunnel/hevtunnel -ffile-prefix-map=${rootDir}=.",
                 )
                 arguments.add("APP_LDFLAGS+=-Wl,--build-id=none")
             }

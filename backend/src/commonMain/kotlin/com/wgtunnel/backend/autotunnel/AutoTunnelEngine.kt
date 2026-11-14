@@ -63,11 +63,11 @@ class AutoTunnelEngine {
         return when {
             network.type == AutoTunnelNetworkType.ETHERNET && policy.isTunnelOnEthernetEnabled ->
                 listOfNotNull(
-                    state.tunnels.firstOrNull { it.isEthernetTunnel } ?: defaultTunnel(state)
+                    state.tunnels.firstOrNull { it.isEthernetTunnel } ?: defaultTunnel(state),
                 )
             network.type == AutoTunnelNetworkType.CELLULAR && policy.isTunnelOnMobileDataEnabled ->
                 listOfNotNull(
-                    state.tunnels.firstOrNull { it.isMobileDataTunnel } ?: defaultTunnel(state)
+                    state.tunnels.firstOrNull { it.isMobileDataTunnel } ?: defaultTunnel(state),
                 )
             network.type == AutoTunnelNetworkType.WIFI &&
                 policy.isTunnelOnWifiEnabled &&

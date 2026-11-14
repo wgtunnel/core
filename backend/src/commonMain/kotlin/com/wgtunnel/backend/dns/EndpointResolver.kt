@@ -101,7 +101,7 @@ internal class EndpointResolver(
                 if (result.ipv4.isNotEmpty() || result.ipv6.isNotEmpty()) {
                     peerResults[publicKey] =
                         result.copy(
-                            ipv6 = result.ipv6.map { if (it.startsWith("[")) it else "[$it]" }
+                            ipv6 = result.ipv6.map { if (it.startsWith("[")) it else "[$it]" },
                         )
                     log.i { "Resolved peer ${shortKey(publicKey)}" }
                     log.d {
