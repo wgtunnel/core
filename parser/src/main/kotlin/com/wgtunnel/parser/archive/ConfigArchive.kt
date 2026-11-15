@@ -41,9 +41,7 @@ object ConfigArchive {
         zip.finish()
     }
 
-    /**
-     * Reads the `.conf` files in a zip, ignoring folders, hidden files and blank configs.
-     */
+    /** Reads the `.conf` files in a zip, ignoring folders, hidden files and blank configs. */
     fun read(input: InputStream): List<Entry> {
         val entries = mutableListOf<Entry>()
         ZipInputStream(input).use { zip ->

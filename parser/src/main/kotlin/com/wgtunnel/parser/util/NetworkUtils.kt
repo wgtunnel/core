@@ -41,7 +41,8 @@ object NetworkUtils {
     }
 
     fun isValidHostname(host: String): Boolean {
-        val cleaned = host.removeSurrounding("[", "]").trim()
+        // A single trailing dot marks a fully qualified name and is valid
+        val cleaned = host.removeSurrounding("[", "]").trim().removeSuffix(".")
         if (cleaned.isBlank() || cleaned.length > 253) return false
         if (cleaned.startsWith(".") || cleaned.endsWith(".") || cleaned.contains("..")) return false
 
@@ -49,7 +50,7 @@ object NetworkUtils {
             label.length in 1..63 &&
                 !label.startsWith('-') &&
                 !label.endsWith('-') &&
-                label.matches(Regex("^[a-zA-Z0-9-]+$"))
+                label.matches(Regex("^[a-zA-Z0-9_-]+$"))
         }
     }
 

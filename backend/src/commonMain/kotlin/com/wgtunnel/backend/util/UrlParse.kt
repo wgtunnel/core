@@ -30,6 +30,25 @@ internal object UrlParse {
         return authorityPort(authority)
     }
 
+    /** True when the URL names a port, even one that is not a number */
+    fun hasPort(url: String): Boolean {
+        val s = url.trim()
+        val schemeEnd = s.indexOf("://")
+        if (schemeEnd < 0) return false
+        var rest = s.substring(schemeEnd + 3)
+        val at = rest.lastIndexOf('@')
+        if (at >= 0) rest = rest.substring(at + 1)
+        val end =
+            rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
+        val authority = rest.substring(0, end)
+        if (authority.startsWith("[")) {
+            val close = authority.indexOf(']')
+            return close >= 0 && authority.substring(close + 1).startsWith(":")
+        }
+        val colon = authority.lastIndexOf(':')
+        return colon > 0 && authority.indexOf(':') == colon
+    }
+
     /** path + optional ?query, default /dns-query */
     fun pathAndQuery(url: String, defaultPath: String = "/dns-query"): String {
         val s = url.trim()

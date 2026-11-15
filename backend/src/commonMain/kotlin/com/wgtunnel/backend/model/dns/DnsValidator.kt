@@ -104,6 +104,12 @@ object DnsValidator {
         if (host.isNullOrBlank()) {
             return Result.Invalid(DnsValidationError.InvalidUrl)
         }
+        if (!isValidHostOrIp(host)) {
+            return Result.Invalid(DnsValidationError.InvalidIpOrHost)
+        }
+        if (UrlParse.hasPort(value) && UrlParse.port(value) !in 1..65535) {
+            return Result.Invalid(DnsValidationError.InvalidPort)
+        }
         return Result.Valid
     }
 
@@ -176,10 +182,12 @@ object DnsValidator {
     }
 
     private fun isValidHostname(value: String): Boolean {
-        if (value.length > 253) return false
-        val labels = value.split(".")
+        // A single trailing dot marks a fully qualified name and is valid
+        val name = value.removeSuffix(".")
+        if (name.length > 253) return false
+        val labels = name.split(".")
         return labels.all { label ->
-            label.matches(Regex("^[a-zA-Z0-9-]{1,63}$")) &&
+            label.matches(Regex("^[a-zA-Z0-9_-]{1,63}$")) &&
                 !label.startsWith("-") &&
                 !label.endsWith("-")
         }
