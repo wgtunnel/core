@@ -18,6 +18,7 @@ import com.wgtunnel.backend.AndroidApplicationProvider
 import com.wgtunnel.backend.BackendRuntime
 import com.wgtunnel.backend.BypassSocket
 import com.wgtunnel.backend.SocketProtector
+import com.wgtunnel.backend.StrictSplitBridge
 import com.wgtunnel.backend.Tunnel
 import com.wgtunnel.backend.dns.UnderlayDnsBridge
 import com.wgtunnel.backend.model.KillSwitchConfig
@@ -76,6 +77,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     @Volatile private var userActivatedShutdown = false
 
     override fun onCreate() {
+        StrictSplitBridge.attach(this)
         serviceManager.set(this)
         ensureVpnNetworkCallback()
         super.onCreate()
@@ -84,6 +86,7 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
     override fun onDestroy() {
         log.d { "VpnService destroyed" }
         try {
+            StrictSplitBridge.clear()
             BypassSocket.setSocketProtector(null)
             serviceManager.clearVpnService()
             closeVpnTunnelFd()

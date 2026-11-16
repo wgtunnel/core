@@ -9,6 +9,10 @@
 -keepclassmembers class com.wgtunnel.backend.dns.UnderlayDnsBridge {
     public static <methods>;
 }
+# Called from vpn_jni_android.c by name
+-keepclassmembers class com.wgtunnel.backend.StrictSplitBridge {
+    public static boolean allow(java.lang.String, java.lang.String, int, java.lang.String, int);
+}
 -keepclassmembers class com.wgtunnel.backend.network.NetworkMonitorNative {
     public static <methods>;
 }

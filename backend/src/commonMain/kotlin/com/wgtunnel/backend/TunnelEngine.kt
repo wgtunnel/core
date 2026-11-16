@@ -17,6 +17,7 @@ internal interface TunnelEngine {
         // take down the interface that protects the user.
         destroyRuntimeOnFailure: Boolean = true,
         outerConfig: Config? = null,
+        strictSplitTunnel: Boolean = false,
     ): EngineStartResult
 
     suspend fun stop(handle: Int, mode: BackendMode)

@@ -40,7 +40,8 @@ require (
 	honnef.co/go/tools v0.7.0 // indirect
 )
 
-replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20260926105223-c434976f60d4
+// android/uidfilter branch
+replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20261115203743-8810bdf58226
 
 // replace github.com/amnezia-vpn/amneziawg-go/v3 => ../../../../amneziawg-go
 

@@ -9,6 +9,10 @@
 static jobject g_protector;
 static jmethodID g_bypass_mid;
 static jmethodID g_lookupOnUnderlayNetworkMethod;
+static jclass g_strictSplitClass;
+static jmethodID g_strictSplitAllow;
+
+extern void applyStrictSplitFilter(int active);
 
 static JNIEnv *
 android_get_env(int *attached)
@@ -42,11 +46,37 @@ android_release_env(int attached)
     }
 }
 
+static void
+setup_strict_split_class(JNIEnv *env)
+{
+    jclass local;
+
+    local = (*env)->FindClass(env, "com/wgtunnel/backend/StrictSplitBridge");
+    if (local == NULL) {
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        return;
+    }
+    if (g_strictSplitClass != NULL) {
+        (*env)->DeleteGlobalRef(env, g_strictSplitClass);
+    }
+    g_strictSplitClass = (*env)->NewGlobalRef(env, local);
+    g_strictSplitAllow = (*env)->GetStaticMethodID(
+            env, local, "allow",
+            "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;I)Z");
+    if (g_strictSplitAllow == NULL && (*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env, local);
+}
+
 void
 vpn_jni_android_onload(JNIEnv *env)
 {
     jclass cls = vpn_jni_dns_resolver_class();
 
+    setup_strict_split_class(env);
     g_lookupOnUnderlayNetworkMethod = NULL;
     if (cls == NULL) {
         return;
@@ -68,6 +98,11 @@ vpn_jni_android_onunload(JNIEnv *env)
         g_bypass_mid = NULL;
     }
     g_lookupOnUnderlayNetworkMethod = NULL;
+    if (g_strictSplitClass != NULL) {
+        (*env)->DeleteGlobalRef(env, g_strictSplitClass);
+        g_strictSplitClass = NULL;
+        g_strictSplitAllow = NULL;
+    }
 }
 
 char *
@@ -194,6 +229,64 @@ Java_com_wgtunnel_backend_dns_UnderlayDnsBridge_setUnderlayNetworkHandleNative(
     (void)env;
     (void)c;
     setUnderlayNetworkHandle((int64_t)handle);
+}
+
+int
+JniStrictSplitAllow(const char *network, const char *src_ip, int src_port,
+                    const char *dst_ip, int dst_port)
+{
+    int attached = 0;
+    JNIEnv *env;
+    jstring jnet, jsrc, jdst;
+    jboolean allowed;
+
+    if (g_strictSplitClass == NULL || g_strictSplitAllow == NULL) {
+        return 0;
+    }
+    env = android_get_env(&attached);
+    if (env == NULL) {
+        return 0;
+    }
+    jnet = (*env)->NewStringUTF(env, network != NULL ? network : "");
+    jsrc = (*env)->NewStringUTF(env, src_ip != NULL ? src_ip : "");
+    jdst = (*env)->NewStringUTF(env, dst_ip != NULL ? dst_ip : "");
+    if (jnet == NULL || jsrc == NULL || jdst == NULL) {
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        if (jnet != NULL) {
+            (*env)->DeleteLocalRef(env, jnet);
+        }
+        if (jsrc != NULL) {
+            (*env)->DeleteLocalRef(env, jsrc);
+        }
+        if (jdst != NULL) {
+            (*env)->DeleteLocalRef(env, jdst);
+        }
+        android_release_env(attached);
+        return 0;
+    }
+    allowed = (*env)->CallStaticBooleanMethod(
+            env, g_strictSplitClass, g_strictSplitAllow,
+            jnet, jsrc, (jint)src_port, jdst, (jint)dst_port);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        allowed = JNI_FALSE;
+    }
+    (*env)->DeleteLocalRef(env, jnet);
+    (*env)->DeleteLocalRef(env, jsrc);
+    (*env)->DeleteLocalRef(env, jdst);
+    android_release_env(attached);
+    return allowed == JNI_TRUE ? 1 : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_wgtunnel_backend_StrictSplitBridge_applyStrictSplitFilter(
+        JNIEnv *env, jclass c, jint active)
+{
+    (void)env;
+    (void)c;
+    applyStrictSplitFilter((int)active);
 }
 
 JNIEXPORT void JNICALL

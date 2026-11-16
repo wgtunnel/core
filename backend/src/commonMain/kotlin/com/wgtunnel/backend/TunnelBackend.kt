@@ -233,6 +233,8 @@ class TunnelBackend(
                 // live firewall state instead and ignores this field.
                 val killSwitchStampedDnsConfig =
                     tunnelDnsConfig?.copy(killSwitchEnabled = _status.value.killSwitch.enabled)
+                val strictSplitTunnel =
+                    _status.value.activeTunnels[tunnelId]?.tunnel?.strictSplitTunnel == true
                 val result =
                     engine.start(
                         tunnelId,
@@ -241,6 +243,7 @@ class TunnelBackend(
                         killSwitchStampedDnsConfig,
                         destroyRuntimeOnFailure,
                         outerConfig,
+                        strictSplitTunnel,
                     )
                 nativeOwnedHandles.add(handle)
                 updateActiveTunnel(tunnelId) {
@@ -655,6 +658,7 @@ class TunnelBackend(
         // VPN mode owns the TUN / VpnService session. Kill switch is independent
         // and must not be started or stopped here (including KillSwitchPrimary).
         if (mode is BackendMode.Vpn) {
+            applyStrictSplit(enabled = false, included = emptyList(), excluded = emptyList())
             runtimeManager.destroyVpnRuntime(listOf(tunnelId))
         }
         if (proxyTypeCount == 1) {

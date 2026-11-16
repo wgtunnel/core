@@ -31,6 +31,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
         tunnelDnsConfig: TunnelDnsConfig?,
         destroyRuntimeOnFailure: Boolean,
         outerConfig: Config?,
+        strictSplitTunnel: Boolean,
     ): EngineStartResult {
         val ifName = interfacePrefix() + tunnelId
 
@@ -117,6 +118,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
                     dnsJson,
                     destroyRuntimeOnFailure,
                     outerQuick,
+                    strictSplitTunnel,
                 )
         }
 
@@ -165,6 +167,7 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
         dnsConfigJson: String?,
         destroyRuntimeOnFailure: Boolean,
         outerQuick: String?,
+        strictSplitTunnel: Boolean,
     ) {
         runtimeManager.getOrCreateVpnRuntime()
         val tunFd =
@@ -174,22 +177,38 @@ internal class WireGuardTunnelEngine(private val runtimeManager: RuntimeManager)
             } else {
                 -1
             }
+        val iface = config.`interface`
+        applyStrictSplit(
+            enabled = strictSplitTunnel,
+            included = iface.allIncludedApps,
+            excluded = iface.allExcludedApps,
+        )
         val rc =
-            VpnBackend.turnOn(
-                handle,
-                ifName,
-                tunFd,
-                config.asQuickString(),
-                dnsConfigJson,
-                runtimeManager.uapiPath,
-                outerQuick,
-            )
+            try {
+                VpnBackend.turnOn(
+                    handle,
+                    ifName,
+                    tunFd,
+                    config.asQuickString(),
+                    dnsConfigJson,
+                    runtimeManager.uapiPath,
+                    outerQuick,
+                )
+            } catch (t: Throwable) {
+                clearStrictSplit()
+                throw t
+            }
         if (rc < 0) {
+            clearStrictSplit()
             if (destroyRuntimeOnFailure) {
                 runCatching { runtimeManager.destroyVpnRuntime(listOf(tunnelId)) }
             }
             throw BackendException.InternalError("Internal native error with code: $rc")
         }
+    }
+
+    private fun clearStrictSplit() {
+        applyStrictSplit(enabled = false, included = emptyList(), excluded = emptyList())
     }
 
     private suspend fun startProxyTunnel(

@@ -48,17 +48,24 @@ add_custom_command(TARGET libam.so POST_BUILD
 set(GO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../backend")
 set(AMGO_OUT "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libam-go.so")
 
-# Recursively track every Go/C/header source in this module to prevent stale builds
-file(GLOB_RECURSE BACKEND_SRCS
-		"${GO_DIR}/*.go"
-		"${GO_DIR}/*.c"
-		"${GO_DIR}/*.h")
-
-# for local dev
-set(LOCAL_AMNEZIAWG_GO_DIR "${GO_DIR}/../../../../amneziawg-go")
-if(EXISTS "${LOCAL_AMNEZIAWG_GO_DIR}")
-	file(GLOB_RECURSE LOCAL_AMNEZIAWG_GO_SRCS "${LOCAL_AMNEZIAWG_GO_DIR}/*.go")
-endif()
+# Recursively track every Go/C/header source in this module to prevent stale builds.
+set(BACKEND_SRCS)
+file(GLOB BACKEND_CHILDREN LIST_DIRECTORIES true "${GO_DIR}/*")
+foreach(child ${BACKEND_CHILDREN})
+	get_filename_component(child_name "${child}" NAME)
+	if(child_name STREQUAL "build" OR child_name STREQUAL "out")
+		continue()
+	endif()
+	if(IS_DIRECTORY "${child}")
+		file(GLOB_RECURSE child_srcs CONFIGURE_DEPENDS
+				"${child}/*.go"
+				"${child}/*.c"
+				"${child}/*.h")
+		list(APPEND BACKEND_SRCS ${child_srcs})
+	elseif(child_name MATCHES "\\.(go|c|h)$")
+		list(APPEND BACKEND_SRCS "${child}")
+	endif()
+endforeach()
 
 add_custom_command(
 		OUTPUT "${AMGO_OUT}"
@@ -85,7 +92,6 @@ add_custom_command(
 		${GO_DIR}/go.sum
 		${GO_DIR}/goruntime-boottime-over-monotonic.diff
 		${BACKEND_SRCS}
-		${LOCAL_AMNEZIAWG_GO_SRCS}
 )
 
 add_custom_target(libam-go.so ALL DEPENDS "${AMGO_OUT}")
