@@ -3,9 +3,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "include/vpn_jni.h"
 
+// Set from the main thread and from coroutines, read from Go threads. g_protector_lock guards both,
+// so a ref is never deleted twice or used after it was deleted.
+static pthread_mutex_t g_protector_lock = PTHREAD_MUTEX_INITIALIZER;
 static jobject g_protector;
 static jmethodID g_bypass_mid;
 static jmethodID g_lookupOnUnderlayNetworkMethod;
@@ -92,11 +96,13 @@ vpn_jni_android_onload(JNIEnv *env)
 void
 vpn_jni_android_onunload(JNIEnv *env)
 {
+    pthread_mutex_lock(&g_protector_lock);
     if (g_protector != NULL) {
         (*env)->DeleteGlobalRef(env, g_protector);
         g_protector = NULL;
         g_bypass_mid = NULL;
     }
+    pthread_mutex_unlock(&g_protector_lock);
     g_lookupOnUnderlayNetworkMethod = NULL;
     if (g_strictSplitClass != NULL) {
         (*env)->DeleteGlobalRef(env, g_strictSplitClass);
@@ -176,20 +182,33 @@ bypass_socket(int fd)
 {
     int attached = 0;
     JNIEnv *env;
+    jobject protector;
+    jmethodID mid;
     jint ok;
 
-    if (g_protector == NULL || g_bypass_mid == NULL) {
-        return 0;
-    }
     env = android_get_env(&attached);
     if (env == NULL) {
         return 0;
     }
-    ok = (*env)->CallIntMethod(env, g_protector, g_bypass_mid, (jint)fd);
+    // A local ref keeps the protector alive for this call even if another thread replaces or
+    // clears it meanwhile. The call itself runs outside the lock, as it can take a while.
+    pthread_mutex_lock(&g_protector_lock);
+    protector = g_protector != NULL ? (*env)->NewLocalRef(env, g_protector) : NULL;
+    mid = g_bypass_mid;
+    pthread_mutex_unlock(&g_protector_lock);
+    if (protector == NULL || mid == NULL) {
+        if (protector != NULL) {
+            (*env)->DeleteLocalRef(env, protector);
+        }
+        android_release_env(attached);
+        return 0;
+    }
+    ok = (*env)->CallIntMethod(env, protector, mid, (jint)fd);
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
         ok = 0;
     }
+    (*env)->DeleteLocalRef(env, protector);
     android_release_env(attached);
     return ok ? 1 : 0;
 }
@@ -198,27 +217,38 @@ JNIEXPORT void JNICALL
 Java_com_wgtunnel_backend_BypassSocket_setSocketProtector(
         JNIEnv *env, jclass c, jobject protector)
 {
+    jobject next = NULL;
+    jmethodID next_mid = NULL;
+    jobject previous;
     jclass cls;
     (void)c;
 
-    if (g_protector != NULL) {
-        (*env)->DeleteGlobalRef(env, g_protector);
-        g_protector = NULL;
-        g_bypass_mid = NULL;
+    // Resolve the new protector before taking the lock, then swap it in one step
+    if (protector != NULL) {
+        cls = (*env)->GetObjectClass(env, protector);
+        next_mid = (*env)->GetMethodID(env, cls, "bypass", "(I)I");
+        (*env)->DeleteLocalRef(env, cls);
+        if (next_mid == NULL) {
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            }
+        } else {
+            next = (*env)->NewGlobalRef(env, protector);
+            if (next == NULL) {
+                next_mid = NULL;
+            }
+        }
     }
-    if (protector == NULL) {
-        return;
-    }
-    g_protector = (*env)->NewGlobalRef(env, protector);
-    if (g_protector == NULL) {
-        return;
-    }
-    cls = (*env)->GetObjectClass(env, protector);
-    g_bypass_mid = (*env)->GetMethodID(env, cls, "bypass", "(I)I");
-    (*env)->DeleteLocalRef(env, cls);
-    if (g_bypass_mid == NULL) {
-        (*env)->DeleteGlobalRef(env, g_protector);
-        g_protector = NULL;
+
+    pthread_mutex_lock(&g_protector_lock);
+    previous = g_protector;
+    g_protector = next;
+    g_bypass_mid = next_mid;
+    pthread_mutex_unlock(&g_protector_lock);
+
+    // Only the thread that swapped it out owns the old ref, so it is deleted exactly once
+    if (previous != NULL) {
+        (*env)->DeleteGlobalRef(env, previous);
     }
 }
 

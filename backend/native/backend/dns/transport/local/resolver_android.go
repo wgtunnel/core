@@ -10,6 +10,7 @@ package local
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <android/log.h>
+#include <pthread.h>
 
 // Attribution:
 // The android_res_nsend / android_res_nresult approach is the same technique
@@ -18,42 +19,46 @@ package local
 
 typedef int (*android_res_nsend_t)(uint64_t network, const uint8_t* msg, size_t msglen, int flags);
 typedef int (*android_res_nresult_t)(int fd, int* rcode, uint8_t* resp, size_t resp_len);
+typedef void (*android_res_cancel_t)(int nsend_fd);
 
-static void* libandroid_handle = NULL;
-static android_res_nsend_t  p_android_res_nsend  = NULL;
+static android_res_nsend_t   p_android_res_nsend   = NULL;
 static android_res_nresult_t p_android_res_nresult = NULL;
+static android_res_cancel_t  p_android_res_cancel  = NULL;
+static pthread_once_t android_res_once = PTHREAD_ONCE_INIT;
 
-static int load_android_res() {
-    if (libandroid_handle != NULL) {
-        return (p_android_res_nsend != NULL && p_android_res_nresult != NULL) ? 0 : -1;
+// Runs once, so concurrent first lookups never see a half loaded set of functions
+static void load_android_res_once(void) {
+    void* handle = dlopen("libandroid.so", RTLD_NOW);
+    if (!handle) {
+        return;
     }
-
-    libandroid_handle = dlopen("libandroid.so", RTLD_NOW);
-    if (!libandroid_handle) {
-        return -1;
+    android_res_nsend_t nsend = (android_res_nsend_t)dlsym(handle, "android_res_nsend");
+    android_res_nresult_t nresult = (android_res_nresult_t)dlsym(handle, "android_res_nresult");
+    android_res_cancel_t cancel = (android_res_cancel_t)dlsym(handle, "android_res_cancel");
+    if (!nsend || !nresult || !cancel) {
+        return;
     }
-
-    p_android_res_nsend  = (android_res_nsend_t)dlsym(libandroid_handle, "android_res_nsend");
-    p_android_res_nresult = (android_res_nresult_t)dlsym(libandroid_handle, "android_res_nresult");
-
-    if (!p_android_res_nsend || !p_android_res_nresult) {
-        return -1;
-    }
-    return 0;
+    p_android_res_nresult = nresult;
+    p_android_res_cancel = cancel;
+    p_android_res_nsend = nsend;
 }
 
 static int call_android_res_nsend(uint64_t network, const uint8_t* msg, size_t msglen, int flags) {
-    if (load_android_res() != 0 || !p_android_res_nsend) {
+    pthread_once(&android_res_once, load_android_res_once);
+    if (!p_android_res_nsend) {
         return -1;
     }
     return p_android_res_nsend(network, msg, msglen, flags);
 }
 
+// Reads the answer and closes fd, whatever the result
 static int call_android_res_nresult(int fd, int* rcode, uint8_t* resp, size_t resp_len) {
-    if (!p_android_res_nresult) {
-        return -1;
-    }
     return p_android_res_nresult(fd, rcode, resp, resp_len);
+}
+
+// Abandons the query and closes fd
+static void call_android_res_cancel(int fd) {
+    p_android_res_cancel(fd);
 }
 */
 import "C"
@@ -62,6 +67,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -116,16 +122,33 @@ func (r *androidResolver) rawExchange(networkHandle int64, request []byte) ([]by
 		// Raw path not available or failed, tell the LocalTransport to fall back
 		return nil, ErrNotSupported
 	}
-	defer unix.Close(int(fd))
+	// The fd belongs to the platform resolver: android_res_nresult closes it after reading, and
+	// android_res_cancel closes it when the answer is abandoned. Closing it here as well would
+	// close whatever reused the number since, which fdsan then aborts on.
 
-	// Wait for the response for 5s
+	// Wait for the response for 5s. Go interrupts its threads with signals, so a poll that returns
+	// EINTR is retried with the time left rather than failing the query.
+	deadline := time.Now().Add(5 * time.Second)
 	pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLERR}}
-	nReady, err := unix.Poll(pfd, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("android resolver: poll: %w", err)
-	}
-	if nReady == 0 {
-		return nil, context.DeadlineExceeded
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			C.call_android_res_cancel(fd)
+			return nil, context.DeadlineExceeded
+		}
+		nReady, err := unix.Poll(pfd, int(remaining.Milliseconds())+1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			C.call_android_res_cancel(fd)
+			return nil, fmt.Errorf("android resolver: poll: %w", err)
+		}
+		if nReady == 0 {
+			C.call_android_res_cancel(fd)
+			return nil, context.DeadlineExceeded
+		}
+		break
 	}
 
 	buf := make([]byte, 8192)

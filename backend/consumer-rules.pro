@@ -16,6 +16,9 @@
 -keepclassmembers class com.wgtunnel.backend.network.NetworkMonitorNative {
     public static <methods>;
 }
+-keepclassmembers class com.wgtunnel.backend.StrictSplitBridge {
+    public static boolean allow(java.lang.String, java.lang.String, int, java.lang.String, int);
+}
 # Interfaces invoked from native
 -keep interface com.wgtunnel.backend.TunnelStatusCallback {
     void onStatus(int, int);
