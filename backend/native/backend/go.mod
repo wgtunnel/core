@@ -41,7 +41,7 @@ require (
 )
 
 // android/uidfilter branch
-replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20261115203743-8810bdf58226
+replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/wgtunnel/amneziawg-go/v3 v3.0.0-20261117050704-c3061d2a7be8
 
 // replace github.com/amnezia-vpn/amneziawg-go/v3 => ../../../../amneziawg-go
 
