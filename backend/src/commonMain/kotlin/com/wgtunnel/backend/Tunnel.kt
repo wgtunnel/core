@@ -6,7 +6,9 @@ interface Tunnel {
     val isMetered: Boolean
     val scriptsEnabled: Boolean
 
-    /** Android installs the strict split-tunnel filter when this is true. Desktop leaves it false. */
+    /**
+     * Android installs the strict split-tunnel filter when this is true. Desktop leaves it false.
+     */
     val strictSplitTunnel: Boolean
         get() = false
 

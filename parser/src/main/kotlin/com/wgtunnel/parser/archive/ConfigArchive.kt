@@ -1,5 +1,6 @@
 package com.wgtunnel.parser.archive
 
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.text.Normalizer
@@ -115,9 +116,16 @@ object ConfigArchive {
         return candidate
     }
 
+    // InputStream.readNBytes needs Android API 33
     private fun readLimited(zip: ZipInputStream): ByteArray? {
-        val bytes = zip.readNBytes(MAX_ENTRY_BYTES + 1)
-        return bytes.takeIf { it.size <= MAX_ENTRY_BYTES }
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        while (out.size() <= MAX_ENTRY_BYTES) {
+            val n = zip.read(buf, 0, minOf(buf.size, MAX_ENTRY_BYTES + 1 - out.size()))
+            if (n < 0) break
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray().takeIf { it.size <= MAX_ENTRY_BYTES }
     }
 
     private fun transliterate(char: Char): String {

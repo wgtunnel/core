@@ -10,12 +10,10 @@ import androidx.annotation.RequiresApi
 import java.net.InetSocketAddress
 
 /**
- * Policy for the userspace packet filter. The snapshot is published before the
- * native filter is installed, and cleared only after the native filter is
- * removed.
+ * Policy for the userspace packet filter. The snapshot is published before the native filter is
+ * installed, and cleared only after the native filter is removed.
  *
- * Unresolved owners are dropped. That includes kernel ICMP, a UID of 0, and any
- * lookup that throws.
+ * Unresolved owners are dropped. That includes kernel ICMP, a UID of 0, and any lookup that throws.
  */
 internal object StrictSplitBridge {
     const val OFF = 0

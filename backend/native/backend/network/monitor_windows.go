@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -208,16 +209,67 @@ func (m *windowsMonitor) refresh() {
 	}
 }
 
-// underlayFromDefaultRoute enumerate adapters, keep only OperStatus-Up physical NICs, then pick the
-// IPv4 default route with the lowest (route metric + interface Ipv4Metric).
-// Down Wi-Fi NICs drop out here even if a stale 0.0.0.0/0 remains.
+// underlayFromDefaultRoute picks the IPv4 underlay with pickDefaultRoute.
 func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
+	cache := &wifiCache{}
+	best, sawTunDefault, err := pickDefaultRoute(windows.AF_INET, cache)
+	if err != nil {
+		return NetworkInfo{}, err
+	}
+	if best == nil {
+		if sawTunDefault {
+			return NetworkInfo{}, errPhysicalDefaultHidden
+		}
+		return NetworkInfo{Type: NetworkDisconnected}, nil
+	}
+	var wifi wifiDetails
+	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
+		wifi = cache.lookup(best.adapter)
+	}
+	return networkInfoFromAdapter(ctx, best.adapter, wifi)
+}
+
+// PhysicalRoute is the default route of the physical underlay.
+type PhysicalRoute struct {
+	LUID    winipcfg.LUID
+	NextHop netip.Addr
+	IfIndex uint32
+}
+
+// PhysicalDefaultRoute returns the default route Windows would use for family
+// with no tunnel up, chosen as pickDefaultRoute does. ok is false when no
+// usable underlay has a default route for family.
+func PhysicalDefaultRoute(family winipcfg.AddressFamily) (route PhysicalRoute, ok bool, err error) {
+	best, _, err := pickDefaultRoute(family, &wifiCache{})
+	if err != nil || best == nil {
+		return PhysicalRoute{}, false, err
+	}
+	return PhysicalRoute{
+		LUID:    best.row.InterfaceLUID,
+		NextHop: best.row.NextHop.Addr(),
+		IfIndex: best.row.InterfaceIndex,
+	}, true, nil
+}
+
+type defaultRouteCandidate struct {
+	adapter *winipcfg.IPAdapterAddresses
+	row     *winipcfg.MibIPforwardRow2
+	metric  uint32
+}
+
+// pickDefaultRoute enumerates adapters, keeps only OperStatus-Up physical NICs
+// with family enabled, then picks the default route with the lowest
+// (route metric + interface metric). Down NICs drop out here even if a stale
+// default route remains, as a disconnected Ethernet adapter with a static
+// gateway leaves one. sawTunDefault is set only when no physical default route
+// exists at all and a tunnel adapter has one.
+func pickDefaultRoute(family winipcfg.AddressFamily, cache *wifiCache) (best *defaultRouteCandidate, sawTunDefault bool, err error) {
 	addrs, err := winipcfg.GetAdaptersAddresses(
 		windows.AF_UNSPEC,
 		winipcfg.GAAFlagIncludeAllInterfaces,
 	)
 	if err != nil {
-		return NetworkInfo{}, err
+		return nil, false, err
 	}
 
 	viable := make(map[winipcfg.LUID]*winipcfg.IPAdapterAddresses, len(addrs))
@@ -227,25 +279,18 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 			tunnelLUIDs[a.LUID] = struct{}{}
 			continue
 		}
-		if !adapterViable(a) {
+		if !adapterViable(a, family) {
 			continue
 		}
 		viable[a.LUID] = a
 	}
 
-	rows, err := winipcfg.GetIPForwardTable2(windows.AF_INET)
+	rows, err := winipcfg.GetIPForwardTable2(family)
 	if err != nil {
-		return NetworkInfo{}, fmt.Errorf("forward table: %w", err)
+		return nil, false, fmt.Errorf("forward table: %w", err)
 	}
 
-	type candidate struct {
-		adapter *winipcfg.IPAdapterAddresses
-		metric  uint32
-	}
-	var cands []candidate
-	sawTunDefault := false
-	cache := &wifiCache{}
-
+	var cands []defaultRouteCandidate
 	for i := range rows {
 		r := &rows[i]
 		if r.Loopback || r.DestinationPrefix.PrefixLength != 0 {
@@ -259,64 +304,61 @@ func underlayFromDefaultRoute(ctx context.Context) (NetworkInfo, error) {
 		if a == nil {
 			continue
 		}
-		cands = append(cands, candidate{
+		ifMetric := a.Ipv4Metric
+		if family == windows.AF_INET6 {
+			ifMetric = a.Ipv6Metric
+		}
+		cands = append(cands, defaultRouteCandidate{
 			adapter: a,
-			metric:  r.Metric + a.Ipv4Metric,
+			row:     r,
+			metric:  r.Metric + ifMetric,
 		})
 	}
 
 	if len(cands) == 0 {
-		if sawTunDefault {
-			return NetworkInfo{}, errPhysicalDefaultHidden
-		}
-		return NetworkInfo{Type: NetworkDisconnected}, nil
+		return nil, sawTunDefault, nil
 	}
 
-	best := cands[0]
-	for _, c := range cands[1:] {
-		if c.metric < best.metric {
-			best = c
+	pick := &cands[0]
+	for i := range cands[1:] {
+		if c := &cands[i+1]; c.metric < pick.metric {
+			pick = c
 		}
 	}
 
 	// Prefer a still-associated underlay over a leftover Wi-Fi default route
 	// whose adapter is Up but not joined (WLAN isState != connected).
-	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
-		if !cache.associated(best.adapter) {
-			var next *candidate
-			nextMetric := ^uint32(0)
-			for i := range cands {
-				c := &cands[i]
-				if c.adapter.IfType == winipcfg.IfTypeIEEE80211 && !cache.associated(c.adapter) {
-					continue
-				}
-				if c.metric < nextMetric {
-					nextMetric = c.metric
-					next = c
-				}
+	if pick.adapter.IfType == winipcfg.IfTypeIEEE80211 && !cache.associated(pick.adapter) {
+		var next *defaultRouteCandidate
+		nextMetric := ^uint32(0)
+		for i := range cands {
+			c := &cands[i]
+			if c.adapter.IfType == winipcfg.IfTypeIEEE80211 && !cache.associated(c.adapter) {
+				continue
 			}
-			if next == nil {
-				return NetworkInfo{Type: NetworkDisconnected}, nil
+			if c.metric < nextMetric {
+				nextMetric = c.metric
+				next = c
 			}
-			best = *next
 		}
+		pick = next
 	}
-
-	var wifi wifiDetails
-	if best.adapter.IfType == winipcfg.IfTypeIEEE80211 {
-		wifi = cache.lookup(best.adapter)
-	}
-	return networkInfoFromAdapter(ctx, best.adapter, wifi)
+	// sawTunDefault only matters when no physical default route exists at all.
+	return pick, false, nil
 }
 
-func adapterViable(a *winipcfg.IPAdapterAddresses) bool {
+func adapterViable(a *winipcfg.IPAdapterAddresses, family winipcfg.AddressFamily) bool {
 	if a.OperStatus != winipcfg.IfOperStatusUp {
 		return false
 	}
 	if a.IfType == winipcfg.IfTypeSoftwareLoopback {
 		return false
 	}
-	if a.Flags&winipcfg.IPAAFlagIpv4Enabled == 0 {
+	enabled := winipcfg.IPAAFlagIpv4Enabled
+	if family == windows.AF_INET6 {
+		enabled = winipcfg.IPAAFlagIpv6Enabled
+	}
+	if a.Flags&enabled == 0 {
 		return false
 	}
 	// Extra vs Tailscale: radio-off Wi-Fi can linger OperStatus-Up with
@@ -381,7 +423,7 @@ func bestPhysicalUnderlay(ctx context.Context, prev NetworkInfo) (NetworkInfo, e
 
 	cache := &wifiCache{}
 	try := func(a *winipcfg.IPAdapterAddresses) (NetworkInfo, bool) {
-		if isTunnelAdapter(a) || !adapterViable(a) {
+		if isTunnelAdapter(a) || !adapterViable(a, windows.AF_INET) {
 			return NetworkInfo{}, false
 		}
 		var wifi wifiDetails

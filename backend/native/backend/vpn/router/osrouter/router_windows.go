@@ -21,6 +21,7 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/wgtunnel/backend/log"
+	"github.com/wgtunnel/backend/network"
 	"github.com/wgtunnel/backend/vpn/dns"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall"
@@ -273,24 +274,21 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 	r.physicalLUID = 0
 	r.physicalLUID6 = 0
 	r.physicalIfIndex = 0
-	physicalRoutes4, _ := winipcfg.GetIPForwardTable2(windows.AF_INET)
-	for _, row := range physicalRoutes4 {
-		if row.DestinationPrefix.Prefix().Bits() == 0 && row.NextHop.Addr().IsValid() {
-			r.originalGateway = row.NextHop.Addr()
-			r.physicalLUID = row.InterfaceLUID
-			r.physicalIfIndex = row.InterfaceIndex
-			log.Debug(tag, "Detected physical IPv4 gateway %v (LUID %d, Index %d) for peer endpoint protection", r.originalGateway, r.physicalLUID, r.physicalIfIndex)
-			break
-		}
+	// Pick the default route Windows would use without the tunnel, skipping
+	// adapters that are down or disconnected. A disconnected Ethernet adapter
+	// with a static gateway keeps its default route, and taking the first one
+	// in the table sent the endpoint route there.
+	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET); err != nil {
+		log.Error(tag, "Finding physical IPv4 default route: %v", err)
+	} else if ok {
+		r.originalGateway, r.physicalLUID, r.physicalIfIndex = pr.NextHop, pr.LUID, pr.IfIndex
+		log.Debug(tag, "Detected physical IPv4 gateway %v (LUID %d, Index %d) for peer endpoint protection", r.originalGateway, r.physicalLUID, r.physicalIfIndex)
 	}
-	physicalRoutes6, _ := winipcfg.GetIPForwardTable2(windows.AF_INET6)
-	for _, row := range physicalRoutes6 {
-		if row.DestinationPrefix.Prefix().Bits() == 0 && row.NextHop.Addr().IsValid() {
-			r.originalGateway6 = row.NextHop.Addr()
-			r.physicalLUID6 = row.InterfaceLUID
-			log.Debug(tag, "Detected physical IPv6 gateway %v (LUID %d) for peer endpoint protection", r.originalGateway6, r.physicalLUID6)
-			break
-		}
+	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET6); err != nil {
+		log.Error(tag, "Finding physical IPv6 default route: %v", err)
+	} else if ok {
+		r.originalGateway6, r.physicalLUID6 = pr.NextHop, pr.LUID
+		log.Debug(tag, "Detected physical IPv6 gateway %v (LUID %d) for peer endpoint protection", r.originalGateway6, r.physicalLUID6)
 	}
 
 	// Protect peer public endpoints from the routing loop by adding a route via the physical
@@ -309,11 +307,13 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 		if prefix.Addr().Is6() {
 			gateway, physicalLUID = r.originalGateway6, r.physicalLUID6
 		}
-		wantLUID, wantNextHop := physicalLUID, gateway
 		if !gateway.IsValid() || physicalLUID == 0 {
-			// fallback: no physical gateway detected for this family, route via the tunnel itself
-			wantLUID, wantNextHop = iface.LUID, netip.Addr{}
+			// A route via the tunnel itself would loop the endpoint into the
+			// tunnel. Leave any route already installed for it in place.
+			log.Error(tag, "No usable physical gateway to protect peer endpoint %v", prefix.Addr())
+			continue
 		}
+		wantLUID, wantNextHop := physicalLUID, gateway
 
 		if existing, ok := r.protectedEndpoints[prefix]; ok {
 			if existing.luid == wantLUID && existing.nextHop == wantNextHop {
@@ -326,10 +326,16 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 		}
 
 		if err := wantLUID.AddRoute(prefix, wantNextHop, 1); err != nil {
-			log.Error(tag, "Failed to add peer endpoint route %v: %v", prefix.Addr(), err)
-			continue
+			if !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+				log.Error(tag, "Failed to add peer endpoint route %v: %v", prefix.Addr(), err)
+				continue
+			}
+			// The same route is already there, likely left by a session that
+			// did not clean up. Track it so it is removed with the tunnel.
+			log.Debug(tag, "Peer endpoint route %v already present, tracking it", prefix.Addr())
+		} else {
+			log.Debug(tag, "Added protecting route for peer endpoint %v", prefix.Addr())
 		}
-		log.Debug(tag, "Added protecting route for peer endpoint %v", prefix.Addr())
 		r.protectedEndpoints[prefix] = protectedEndpointRoute{luid: wantLUID, nextHop: wantNextHop}
 	}
 	for prefix, pe := range r.protectedEndpoints {
