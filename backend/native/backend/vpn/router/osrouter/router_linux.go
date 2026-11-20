@@ -39,6 +39,7 @@ const (
 	tunnelTableID     = 52
 	rulePrioMark      = 100
 	rulePrioExclude   = 150
+	rulePrioSuppress  = 180
 	rulePrioDefault   = 200
 )
 
@@ -197,15 +198,20 @@ func (r *linuxRouter) cleanupPreviousState(link netlink.Link, newC, prevC *route
 	}
 
 	// clean up marks
-	if familyIsolated(prevC, true) && !familyIsolated(newC, true) {
-		r.deletePolicyRules(netlink.FAMILY_V4)
-		r.deleteBootstrapPolicyRules(netlink.FAMILY_V4)
-		r.deleteBlackhole(true)
-	}
-	if familyIsolated(prevC, false) && !familyIsolated(newC, false) {
-		r.deletePolicyRules(netlink.FAMILY_V6)
-		r.deleteBootstrapPolicyRules(netlink.FAMILY_V6)
-		r.deleteBlackhole(false)
+	for _, v4 := range []bool{true, false} {
+		fam := netlink.FAMILY_V6
+		if v4 {
+			fam = netlink.FAMILY_V4
+		}
+		if familyPolicyRouted(prevC, v4) && !familyPolicyRouted(newC, v4) {
+			r.deletePolicyRules(fam)
+			r.deleteBootstrapPolicyRules(fam)
+		} else if familySplit(prevC, v4) && !familySplit(newC, v4) {
+			r.deleteSuppressRule(fam)
+		}
+		if familyIsolated(prevC, v4) && !familyIsolated(newC, v4) {
+			r.deleteBlackhole(v4)
+		}
 	}
 }
 
@@ -360,12 +366,17 @@ func (r *linuxRouter) syncRoutingAndRules(link netlink.Link, newC *router.Config
 		isolated := familyIsolated(newC, v4)
 		usable := familyUsable(newC, v4)
 
-		if isolated {
+		if familyPolicyRouted(newC, v4) {
 			if err := r.addPolicyRules(fam); err != nil {
 				return err
 			}
 			// add bootstrap mark rule for DNS bootstrap
 			if err := r.addBootstrapPolicyRules(fam); err != nil {
+				return err
+			}
+		}
+		if familySplit(newC, v4) {
+			if err := r.addSuppressRule(fam); err != nil {
 				return err
 			}
 		}
@@ -398,13 +409,29 @@ func (r *linuxRouter) syncRoutingAndRules(link netlink.Link, newC *router.Config
 // when the family is blackholed and the prefix must not be pointed at the tun.
 func installedRoute(c *router.Config, rt netip.Prefix) (table int, ok bool) {
 	v4 := rt.Addr().Is4()
-	if familyUsable(c, v4) {
+	if familyUsable(c, v4) || familySplit(c, v4) {
 		return tunnelTableID, true
 	}
 	if familyIsolated(c, v4) {
 		return 0, false
 	}
 	return unix.RT_TABLE_MAIN, true
+}
+
+// familySplit reports a family the tunnel routes only part of ()routes but no
+// default route). Those routes go in the tunnel table behind the fwmark rule like
+// a full tunnel's.
+func familySplit(c *router.Config, v4 bool) bool {
+	if c == nil || familyIsolated(c, v4) {
+		return false
+	}
+	return len(filterRoutes(c.Routes, v4)) > 0
+}
+
+// familyPolicyRouted reports a family whose routes live in the tunnel table and
+// need the fwmark and tunnel table rules.
+func familyPolicyRouted(c *router.Config, v4 bool) bool {
+	return familyIsolated(c, v4) || familySplit(c, v4)
 }
 
 func defaultPrefix(v4 bool) netip.Prefix {
@@ -573,6 +600,37 @@ func (r *linuxRouter) addPolicyRules(fam int) error {
 	return nil
 }
 
+// addSuppressRule makes the main table win over the tunnel table for anything
+// it routes more specifically than its default route, the LAN and other local
+// networks included.
+func (r *linuxRouter) addSuppressRule(fam int) error {
+	rule := netlink.NewRule()
+	rule.Family = fam
+	rule.Priority = rulePrioSuppress
+	rule.Table = unix.RT_TABLE_MAIN
+	rule.SuppressPrefixlen = 0
+	if err := r.addRuleIdempotent(rule); err != nil {
+		return err
+	}
+	r.policyRules[fam] = append(r.policyRules[fam], rule)
+	return nil
+}
+
+func (r *linuxRouter) deleteSuppressRule(fam int) {
+	kept := r.policyRules[fam][:0]
+	for _, rule := range r.policyRules[fam] {
+		if rule.Priority != rulePrioSuppress {
+			kept = append(kept, rule)
+		}
+	}
+	r.policyRules[fam] = kept
+	r.sweepPolicyRules(fam, isSuppressRule)
+}
+
+func isSuppressRule(rule netlink.Rule) bool {
+	return rule.Priority == rulePrioSuppress && rule.Table == unix.RT_TABLE_MAIN && rule.SuppressPrefixlen == 0
+}
+
 // deletePolicyRules deletes the policy rules for the family.
 func (r *linuxRouter) deletePolicyRules(fam int) {
 	for _, rule := range r.policyRules[fam] {
@@ -588,6 +646,8 @@ func isTrackedTunnelPolicyRule(rule netlink.Rule) bool {
 	switch rule.Priority {
 	case rulePrioMark:
 		return rule.Mark == mark.LinuxBypassMarkNum && rule.Table == unix.RT_TABLE_MAIN
+	case rulePrioSuppress:
+		return isSuppressRule(rule)
 	case rulePrioDefault:
 		return rule.Table == tunnelTableID
 	default:
