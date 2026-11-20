@@ -22,6 +22,8 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/network"
+	"github.com/wgtunnel/backend/resume"
+	"github.com/wgtunnel/backend/util"
 	"github.com/wgtunnel/backend/vpn/dns"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall"
@@ -34,7 +36,14 @@ import (
 
 const tag = "Router"
 
+// underlaySettle collapses the burst of route and interface notifications one
+// network change produces into a single endpoint route refresh.
+const underlaySettle = time.Second
+
 type windowsRouter struct {
+	// mu serializes Set with the endpoint route refresh that follows network changes.
+	mu sync.Mutex
+
 	iface       string
 	fw          *osfirewall.WindowsFirewall
 	prevConfig  *router.Config
@@ -60,6 +69,8 @@ type windowsRouter struct {
 
 	physicalIfIndex uint32
 	notifyHandle    *winipcfg.InterfaceChangeCallback
+	routeHandle     *winipcfg.RouteChangeCallback
+	underlayChanged chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,12 +99,23 @@ func New(iface string, fw firewall.Firewall, tunnel tun.Device) (router.Router, 
 		protectedEndpoints: make(map[netip.Prefix]protectedEndpointRoute),
 		ctx:                ctx,
 		cancel:             cancel,
+		underlayChanged:    make(chan struct{}, 1),
 	}
-	r.notifyHandle, _ = winipcfg.RegisterInterfaceChangeCallback(r.onNetworkChange)
+	go r.watchUnderlay()
+	var err error
+	if r.notifyHandle, err = winipcfg.RegisterInterfaceChangeCallback(r.onInterfaceChange); err != nil {
+		log.Error(tag, "Interface change subscribe: %v", err)
+	}
+	if r.routeHandle, err = winipcfg.RegisterRouteChangeCallback(r.onRouteChange); err != nil {
+		log.Error(tag, "Route change subscribe: %v", err)
+	}
 	return r, nil
 }
 
 func (r *windowsRouter) Set(c *router.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	newC := c
 	if newC == nil {
 		newC = &router.Config{}
@@ -192,15 +214,66 @@ func getBit(addr netip.Addr, i int) bool {
 	return (b[byteIdx] & (1 << bitIdx)) != 0
 }
 
-func (r *windowsRouter) onNetworkChange(notificationType winipcfg.MibNotificationType, _ *winipcfg.MibIPInterfaceRow) {
-	if notificationType != winipcfg.MibParameterNotification {
-		return // we only care about gateway and routing changes
+// onInterfaceChange catches an adapter connecting or disconnecting. A disconnected
+// adapter can keep its default route, so the route callback alone misses it.
+func (r *windowsRouter) onInterfaceChange(_ winipcfg.MibNotificationType, row *winipcfg.MibIPInterfaceRow) {
+	if row != nil && row.InterfaceLUID == r.luid {
+		return
 	}
+	r.signalUnderlayChange()
+}
 
-	log.Debug(tag, "Network change detected, re-applying router config")
-	if r.prevConfig != nil {
-		// Reverted: calling configureInterface directly here caused a feedback loop
-		_ = r.Set(r.prevConfig.Clone())
+// onRouteChange catches a default route added, removed or given a new gateway on
+// another adapter. Our own writes are split defaults on the tunnel and /32 or /128
+// endpoint routes, so they never match.
+func (r *windowsRouter) onRouteChange(_ winipcfg.MibNotificationType, row *winipcfg.MibIPforwardRow2) {
+	if row == nil || row.DestinationPrefix.PrefixLength != 0 || row.InterfaceLUID == r.luid {
+		return
+	}
+	r.signalUnderlayChange()
+}
+
+func (r *windowsRouter) signalUnderlayChange() {
+	select {
+	case r.underlayChanged <- struct{}{}:
+	default:
+	}
+}
+
+// watchUnderlay refreshes the endpoint routes once each burst of network changes
+// settles. It only touches the endpoint routes, so it cannot retrigger itself the way
+// a full configureInterface from the callback did.
+func (r *windowsRouter) watchUnderlay() {
+	deb := util.NewDebouncer(underlaySettle)
+	for {
+		select {
+		case <-r.ctx.Done():
+			deb.Stop()
+			return
+		case <-r.underlayChanged:
+			deb.Hit()
+		case <-deb.C:
+			deb.Fired()
+			r.refreshEndpointRoutes()
+		}
+	}
+}
+
+// refreshEndpointRoutes moves the endpoint routes to the current physical gateway.
+// When the gateway changed, the sockets are rebound and new handshakes started, as
+// the old path is gone.
+func (r *windowsRouter) refreshEndpointRoutes() {
+	r.mu.Lock()
+	if r.ctx.Err() != nil || r.prevConfig == nil || len(r.prevConfig.PeerEndpoints) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	moved := r.syncEndpointRoutes(r.prevConfig.PeerEndpoints)
+	r.mu.Unlock()
+
+	if moved {
+		log.Debug(tag, "Physical gateway changed, rebinding tunnel sockets")
+		resume.Rebind(tag)
 	}
 }
 
@@ -229,10 +302,14 @@ func setBit(addr netip.Addr, i int, value bool) netip.Addr {
 }
 
 func (r *windowsRouter) Close() error {
-	// Unregister network change callback
+	// Unregister network change callbacks
 	if r.notifyHandle != nil {
 		r.notifyHandle.Unregister()
 		r.notifyHandle = nil
+	}
+	if r.routeHandle != nil {
+		r.routeHandle.Unregister()
+		r.routeHandle = nil
 	}
 
 	if r.prevConfig != nil {
@@ -267,86 +344,7 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 		r.ensurePrivateNetwork()
 	}
 
-	// redirect the physical interface on each call to Set. v4 and v6 are looked up and tracked
-	// separately.
-	r.originalGateway = netip.Addr{}
-	r.originalGateway6 = netip.Addr{}
-	r.physicalLUID = 0
-	r.physicalLUID6 = 0
-	r.physicalIfIndex = 0
-	// Pick the default route Windows would use without the tunnel, skipping
-	// adapters that are down or disconnected. A disconnected Ethernet adapter
-	// with a static gateway keeps its default route, and taking the first one
-	// in the table sent the endpoint route there.
-	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET); err != nil {
-		log.Error(tag, "Finding physical IPv4 default route: %v", err)
-	} else if ok {
-		r.originalGateway, r.physicalLUID, r.physicalIfIndex = pr.NextHop, pr.LUID, pr.IfIndex
-		log.Debug(tag, "Detected physical IPv4 gateway %v (LUID %d, Index %d) for peer endpoint protection", r.originalGateway, r.physicalLUID, r.physicalIfIndex)
-	}
-	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET6); err != nil {
-		log.Error(tag, "Finding physical IPv6 default route: %v", err)
-	} else if ok {
-		r.originalGateway6, r.physicalLUID6 = pr.NextHop, pr.LUID
-		log.Debug(tag, "Detected physical IPv6 gateway %v (LUID %d) for peer endpoint protection", r.originalGateway6, r.physicalLUID6)
-	}
-
-	// Protect peer public endpoints from the routing loop by adding a route via the physical
-	// interface with metric 1, taking priority over the tunnel's split-default routes. Routes
-	// are reconciled against what's currently installed so peers that are removed, change
-	// endpoint, or see their physical gateway change don't leave a stale route behind and so
-	// that closing the tunnel cleans all of them up.
-	wantedEndpoints := make(map[netip.Prefix]bool, len(cfg.PeerEndpoints))
-	for _, prefix := range cfg.PeerEndpoints {
-		if !prefix.IsValid() || prefix.Addr().IsPrivate() || prefix.Addr().IsLinkLocalUnicast() {
-			continue
-		}
-		wantedEndpoints[prefix] = true
-
-		gateway, physicalLUID := r.originalGateway, r.physicalLUID
-		if prefix.Addr().Is6() {
-			gateway, physicalLUID = r.originalGateway6, r.physicalLUID6
-		}
-		if !gateway.IsValid() || physicalLUID == 0 {
-			// A route via the tunnel itself would loop the endpoint into the
-			// tunnel. Leave any route already installed for it in place.
-			log.Error(tag, "No usable physical gateway to protect peer endpoint %v", prefix.Addr())
-			continue
-		}
-		wantLUID, wantNextHop := physicalLUID, gateway
-
-		if existing, ok := r.protectedEndpoints[prefix]; ok {
-			if existing.luid == wantLUID && existing.nextHop == wantNextHop {
-				continue // already protected correctly
-			}
-			if err := existing.luid.DeleteRoute(prefix, existing.nextHop); err != nil {
-				log.Debug(tag, "Failed to remove outdated peer endpoint route %v: %v", prefix.Addr(), err)
-			}
-			delete(r.protectedEndpoints, prefix)
-		}
-
-		if err := wantLUID.AddRoute(prefix, wantNextHop, 1); err != nil {
-			if !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
-				log.Error(tag, "Failed to add peer endpoint route %v: %v", prefix.Addr(), err)
-				continue
-			}
-			// The same route is already there, likely left by a session that
-			// did not clean up. Track it so it is removed with the tunnel.
-			log.Debug(tag, "Peer endpoint route %v already present, tracking it", prefix.Addr())
-		} else {
-			log.Debug(tag, "Added protecting route for peer endpoint %v", prefix.Addr())
-		}
-		r.protectedEndpoints[prefix] = protectedEndpointRoute{luid: wantLUID, nextHop: wantNextHop}
-	}
-	for prefix, pe := range r.protectedEndpoints {
-		if wantedEndpoints[prefix] {
-			continue
-		}
-		if err := pe.luid.DeleteRoute(prefix, pe.nextHop); err != nil {
-			log.Debug(tag, "Failed to remove stale peer endpoint route %v: %v", prefix.Addr(), err)
-		}
-		delete(r.protectedEndpoints, prefix)
-	}
+	r.syncEndpointRoutes(cfg.PeerEndpoints)
 
 	ipif4, err := r.luid.IPInterface(windows.AF_INET)
 	if err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
@@ -516,6 +514,100 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 	}
 
 	return errAcc
+}
+
+// syncEndpointRoutes points each public peer endpoint at the physical gateway with a
+// metric 1 route, so the WireGuard socket stays out of the tunnel's split default
+// routes. It reports whether the physical gateway or adapter changed since the last
+// call while one is still usable.
+func (r *windowsRouter) syncEndpointRoutes(endpoints []netip.Prefix) bool {
+	prevGateway, prevLUID := r.originalGateway, r.physicalLUID
+	prevGateway6, prevLUID6 := r.originalGateway6, r.physicalLUID6
+
+	// Look up the physical gateway again on each call. v4 and v6 are looked up and tracked
+	// separately.
+	r.originalGateway = netip.Addr{}
+	r.originalGateway6 = netip.Addr{}
+	r.physicalLUID = 0
+	r.physicalLUID6 = 0
+	r.physicalIfIndex = 0
+	// Pick the default route Windows would use without the tunnel, skipping
+	// adapters that are down or disconnected. A disconnected Ethernet adapter
+	// with a static gateway keeps its default route, and taking the first one
+	// in the table sent the endpoint route there.
+	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET); err != nil {
+		log.Error(tag, "Finding physical IPv4 default route: %v", err)
+	} else if ok {
+		r.originalGateway, r.physicalLUID, r.physicalIfIndex = pr.NextHop, pr.LUID, pr.IfIndex
+		log.Debug(tag, "Detected physical IPv4 gateway %v (LUID %d, Index %d) for peer endpoint protection", r.originalGateway, r.physicalLUID, r.physicalIfIndex)
+	}
+	if pr, ok, err := network.PhysicalDefaultRoute(windows.AF_INET6); err != nil {
+		log.Error(tag, "Finding physical IPv6 default route: %v", err)
+	} else if ok {
+		r.originalGateway6, r.physicalLUID6 = pr.NextHop, pr.LUID
+		log.Debug(tag, "Detected physical IPv6 gateway %v (LUID %d) for peer endpoint protection", r.originalGateway6, r.physicalLUID6)
+	}
+
+	// Protect peer public endpoints from the routing loop by adding a route via the physical
+	// interface with metric 1, taking priority over the tunnel's split-default routes. Routes
+	// are reconciled against what's currently installed so peers that are removed, change
+	// endpoint, or see their physical gateway change don't leave a stale route behind and so
+	// that closing the tunnel cleans all of them up.
+	wantedEndpoints := make(map[netip.Prefix]bool, len(endpoints))
+	for _, prefix := range endpoints {
+		if !prefix.IsValid() || prefix.Addr().IsPrivate() || prefix.Addr().IsLinkLocalUnicast() {
+			continue
+		}
+		wantedEndpoints[prefix] = true
+
+		gateway, physicalLUID := r.originalGateway, r.physicalLUID
+		if prefix.Addr().Is6() {
+			gateway, physicalLUID = r.originalGateway6, r.physicalLUID6
+		}
+		if !gateway.IsValid() || physicalLUID == 0 {
+			// A route via the tunnel itself would loop the endpoint into the
+			// tunnel. Leave any route already installed for it in place.
+			log.Error(tag, "No usable physical gateway to protect peer endpoint %v", prefix.Addr())
+			continue
+		}
+		wantLUID, wantNextHop := physicalLUID, gateway
+
+		if existing, ok := r.protectedEndpoints[prefix]; ok {
+			if existing.luid == wantLUID && existing.nextHop == wantNextHop {
+				continue // already protected correctly
+			}
+			if err := existing.luid.DeleteRoute(prefix, existing.nextHop); err != nil {
+				log.Debug(tag, "Failed to remove outdated peer endpoint route %v: %v", prefix.Addr(), err)
+			}
+			delete(r.protectedEndpoints, prefix)
+		}
+
+		if err := wantLUID.AddRoute(prefix, wantNextHop, 1); err != nil {
+			if !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+				log.Error(tag, "Failed to add peer endpoint route %v: %v", prefix.Addr(), err)
+				continue
+			}
+			// The same route is already there, likely left by a session that
+			// did not clean up. Track it so it is removed with the tunnel.
+			log.Debug(tag, "Peer endpoint route %v already present, tracking it", prefix.Addr())
+		} else {
+			log.Debug(tag, "Added protecting route for peer endpoint %v", prefix.Addr())
+		}
+		r.protectedEndpoints[prefix] = protectedEndpointRoute{luid: wantLUID, nextHop: wantNextHop}
+	}
+	for prefix, pe := range r.protectedEndpoints {
+		if wantedEndpoints[prefix] {
+			continue
+		}
+		if err := pe.luid.DeleteRoute(prefix, pe.nextHop); err != nil {
+			log.Debug(tag, "Failed to remove stale peer endpoint route %v: %v", prefix.Addr(), err)
+		}
+		delete(r.protectedEndpoints, prefix)
+	}
+
+	moved4 := r.originalGateway.IsValid() && (r.originalGateway != prevGateway || r.physicalLUID != prevLUID)
+	moved6 := r.originalGateway6.IsValid() && (r.originalGateway6 != prevGateway6 || r.physicalLUID6 != prevLUID6)
+	return moved4 || moved6
 }
 
 func (r *windowsRouter) GetPhysicalInterfaceIndex() uint32 {

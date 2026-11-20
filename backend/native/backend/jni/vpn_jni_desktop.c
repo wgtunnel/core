@@ -6,6 +6,7 @@
 
 extern int createInterface(struct go_string ifname, struct go_string config);
 extern void destroyInterface(struct go_string ifname);
+extern int refreshVpnTunnel(int handle, struct go_string config);
 
 void
 vpn_jni_desktop_onload(JNIEnv *env)
@@ -41,4 +42,19 @@ Java_com_wgtunnel_backend_DesktopVpnBackend_destroyInterface(
     if_g = jstring_to_go(env, ifname, &if_p);
     destroyInterface(if_g);
     release_jstring(env, ifname, if_p);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_DesktopVpnBackend_refreshTunnel(
+        JNIEnv *env, jclass c, jint handle, jstring settings)
+{
+    const char *set_p = NULL;
+    struct go_string set_g;
+    int ret;
+    (void)c;
+
+    set_g = jstring_to_go(env, settings, &set_p);
+    ret = refreshVpnTunnel((int)handle, set_g);
+    release_jstring(env, settings, set_p);
+    return (jint)ret;
 }

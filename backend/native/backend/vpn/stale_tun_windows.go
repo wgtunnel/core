@@ -9,6 +9,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// retryCreateAfterStale is false because removeStaleTun cannot remove anything on Windows,
+// so a second CreateTUN right away hits the same adapter and blocks for another Wintun
+// timeout.
+const retryCreateAfterStale = false
+
 func desktopIfaceExists(ifName string) bool {
 	_ = ifName
 	return false
@@ -24,9 +29,12 @@ func cleanupOrphanedDesktopIface(ifName string) {
 	_ = ifName
 }
 
-// createTUN creates the  Wintun adapter for ifName. Passing a deterministic and stable requested GUID
-// across every connect of the same tunnel. CreateTUN's default nil was telling Windows to create a
-// new random one on every call.
+// createTUN creates the Wintun adapter for ifName with a stable GUID, so every connect of the
+// same tunnel reuses one adapter identity. CreateTUN's default nil GUID made Windows create a new
+// network profile on every connect.
+//
+// A failure is not retried. This runs inside the connect call, under locks a disconnect also
+// needs, so a retry would hold the disconnect for as long as it ran.
 func createTUN(ifName string, mtu int) (tun.Device, error) {
 	return tun.CreateTUNWithRequestedGUID(ifName, deterministicAdapterGUID(ifName), mtu)
 }

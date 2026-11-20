@@ -353,11 +353,21 @@ class TunnelBackend(
         mode: BackendMode,
         dns: TunnelDnsConfig?,
     ): Boolean {
-        restartDevice(handle, tunnel, mode, mode, dns, outerConfig = activeOuterConfig(tunnel.id))
+        restartDevice(
+            handle,
+            tunnel,
+            mode,
+            mode,
+            dns,
+            outerConfig = activeOuterConfig(tunnel.id),
+            dnsUnchanged = true,
+        )
         return true
     }
 
-    // A failed start here must not take the VPN down, see bounceTunnelDevice
+    // A failed start here must not take the VPN down, see bounceTunnelDevice. dnsUnchanged
+    // means dns is the config the tunnel is already running with, so an in-place refresh, which
+    // cannot apply a new one, loses nothing.
     private suspend fun restartDevice(
         handle: Int,
         tunnel: Tunnel,
@@ -365,7 +375,9 @@ class TunnelBackend(
         runtimeMode: BackendMode,
         dns: TunnelDnsConfig?,
         outerConfig: Config? = null,
+        dnsUnchanged: Boolean = false,
     ) {
+        if (dnsUnchanged && refreshInPlace(handle, tunnel, runtimeMode, outerConfig)) return
         stopNativeKeepMapped(handle, stopMode)
         recreateVpnInterfaceIfNeeded(tunnel, runtimeMode)
         startEngineAndRegister(
@@ -375,6 +387,24 @@ class TunnelBackend(
             destroyRuntimeOnFailure = false,
             outerConfig = outerConfig,
         )
+    }
+
+    // Windows only
+    // Bounce without recreating the tun adapter, where the platform supports it. A
+    // Wintun adapter created right after a wake fails and can stay broken until reboot, and the
+    // bounce only needs new endpoints, fresh sockets and new handshakes. A hop's outer device is
+    // rebuilt with the inner one, so hops take the full restart.
+    private suspend fun refreshInPlace(
+        handle: Int,
+        tunnel: Tunnel,
+        mode: BackendMode,
+        outerConfig: Config?,
+    ): Boolean {
+        if (mode !is BackendMode.Vpn || runtimeManager.vpnUsesOsTunFd) return false
+        if (outerConfig != null || activeOuterConfig(tunnel.id) != null) return false
+        val refreshed = runtimeManager.getOrCreateVpnRuntime().refreshInPlace(handle, mode.config)
+        if (refreshed) log.i { "Bounced tunnel ${tunnel.id} in place, keeping its adapter" }
+        return refreshed
     }
 
     private fun activeOuterConfig(tunnelId: Int): Config? =
@@ -423,6 +453,7 @@ class TunnelBackend(
             runtimeMode,
             tunnelDnsConfig,
             outerConfig = resolvedOuterConfig(tunnel.id, hostMap),
+            dnsUnchanged = true,
         )
         return true
     }
@@ -487,6 +518,7 @@ class TunnelBackend(
             runtimeMode,
             mergedResolution.resolvedTunnelDnsConfig,
             outerConfig = resolvedOuterConfig(tunnel.id, hostMap),
+            dnsUnchanged = mergedResolution.resolvedTunnelDnsConfig == tunnelDnsConfig,
         )
         return true
     }

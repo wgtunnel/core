@@ -58,18 +58,24 @@ func refresh() time.Time {
 		log.Debug(tag, "No usable network reported after resume, refreshing anyway")
 	}
 	started := time.Now().Round(0)
+	Rebind(tag)
+	return started
+}
+
+// Rebind reopens the UDP sockets of every live device and starts a new handshake on
+// each, for when the underlay the sockets were using has changed.
+func Rebind(logTag string) {
 	for _, d := range util.LiveDevices() {
 		// An inner hop device sends through the outer netstack and has no OS sockets.
 		// One attempt only as a failed open resets the port, so a retry would bind a random
 		// one. With no socket the handshake below fails and recovery rebuilds it.
 		if d.Role != util.RoleInner {
 			if err := d.Dev.BindUpdate(); err != nil {
-				log.Error(tag, "Rebind after resume: %v", err)
+				log.Error(logTag, "Rebind: %v", err)
 			}
 		}
-		util.ForceHandshakes(d.Dev, tag)
+		util.ForceHandshakes(d.Dev, logTag)
 	}
-	return started
 }
 
 func awaitUnderlay() bool {

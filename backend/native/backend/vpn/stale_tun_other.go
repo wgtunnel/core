@@ -4,6 +4,10 @@ package vpn
 
 import "github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
+// retryCreateAfterStale is true because removeStaleTun can free the name for a second
+// CreateTUN.
+const retryCreateAfterStale = true
+
 func desktopIfaceExists(ifName string) bool {
 	_ = ifName
 	return false

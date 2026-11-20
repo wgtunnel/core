@@ -69,7 +69,9 @@ func (c *Config) Clone() *Config {
 	c2 := *c
 	c2.TunnelAddrs = slices.Clone(c.TunnelAddrs)
 	c2.DNS = slices.Clone(c.DNS)
+	c2.SearchDomains = slices.Clone(c.SearchDomains)
 	c2.Routes = slices.Clone(c.Routes)
+	c2.PeerEndpoints = slices.Clone(c.PeerEndpoints)
 	return &c2
 }
 

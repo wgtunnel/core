@@ -16,6 +16,7 @@ import (
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
 	"github.com/wgtunnel/backend/log"
 	tunwrapdns "github.com/wgtunnel/backend/tunwrap/dns"
+	"github.com/wgtunnel/backend/util"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall/firewallmgr"
 	"github.com/wgtunnel/backend/vpn/router"
 	"github.com/wgtunnel/backend/vpn/router/osrouter"
@@ -29,6 +30,8 @@ type pendingInterface struct {
 
 type desktopTunnelExtras struct {
 	router router.Router
+	// routerCfg is the config last applied to router, the base for an in-place refresh
+	routerCfg *router.Config
 }
 
 var (
@@ -84,6 +87,10 @@ func createInterface(ifName string, config string) int32 {
 	tunDev, err := createTUN(tunCreateName(ifName), mtu)
 	if err != nil {
 		log.Error(tag, "CreateTUN: %v", err)
+		if !retryCreateAfterStale {
+			cleanupReserve()
+			return -1
+		}
 		removeStaleTun(ifName)
 		tunDev, err = createTUN(ifName, mtu)
 		if err != nil {
@@ -206,12 +213,14 @@ func startVpn(
 		return -1
 	}
 
+	var routerCfg *router.Config
 	if rt != nil {
 		if conf, err := wireproxyawg.ParseConfigString(config); err == nil {
 			if cfg, err := parseToRouterConfig(conf, 0); err == nil {
 				applyFakeDNSOverride(cfg, dnsConfig)
 				mergeOuterPeerEndpoints(cfg, outerConfig)
 				_ = rt.Set(cfg)
+				routerCfg = cfg
 			}
 		}
 	}
@@ -229,7 +238,7 @@ func startVpn(
 	}
 
 	desktopMu.Lock()
-	desktopExtras[handle] = &desktopTunnelExtras{router: rt}
+	desktopExtras[handle] = &desktopTunnelExtras{router: rt, routerCfg: routerCfg}
 	desktopMu.Unlock()
 	return 0
 }
@@ -334,6 +343,63 @@ func parseToRouterConfig(conf *wireproxyawg.Configuration, listenPort uint16) (*
 }
 
 func OnTunnelStopped(id int32) { closeDesktopExtras(id) }
+
+// refreshVpnTunnel is a bounce that keeps the tunnel adapter. It applies the peers in config,
+// moves the endpoint routes to the new endpoints, reopens the UDP sockets and starts new
+// handshakes. Recreating the adapter instead is what fails on Windows right after a wake, and
+// Single hop only as the hop's outer device is not touched.
+//export refreshVpnTunnel
+func refreshVpnTunnel(handle int32, config string) int32 {
+	config = strings.Clone(config)
+
+	tunnelMu.RLock()
+	th, ok := tunnelHandles[handle]
+	tunnelMu.RUnlock()
+	if !ok || th.device == nil {
+		return -1
+	}
+
+	desktopMu.Lock()
+	ex := desktopExtras[handle]
+	desktopMu.Unlock()
+	// Routes move before the peer update. That update kicks a handshake, which has to
+	// leave through the new endpoint route. Any failure returns -1 and the caller
+	// recreates the adapter. Peers are applied again by that restart.
+	if ex != nil && ex.router != nil && ex.routerCfg != nil {
+		conf, err := wireproxyawg.ParseConfigString(config)
+		if err != nil {
+			log.Error(tag, "refresh parse: %v", err)
+			return -1
+		}
+		fresh, err := parseToRouterConfig(conf, 0)
+		if err != nil {
+			log.Error(tag, "refresh router config: %v", err)
+			return -1
+		}
+		cfg := ex.routerCfg.Clone()
+		cfg.PeerEndpoints = fresh.PeerEndpoints
+		// Unchanged endpoints make this a no-op
+		if err := ex.router.Set(cfg); err != nil {
+			log.Error(tag, "refresh router: %v", err)
+			return -1
+		}
+		desktopMu.Lock()
+		ex.routerCfg = cfg
+		desktopMu.Unlock()
+	}
+
+	if rc := updateVpnTunnelPeers(handle, config); rc < 0 {
+		return rc
+	}
+
+	if err := th.device.BindUpdate(); err != nil {
+		log.Error(tag, "refresh rebind: %v", err)
+		return -1
+	}
+	util.ForceHandshakes(th.device, tag)
+	log.Debug(tag, "Refreshed tunnel %d in place", handle)
+	return 0
+}
 
 // Darwin utun names are assigned by the kernel (utunN). Linux/Windows honor ifName.
 func tunCreateName(requested string) string {

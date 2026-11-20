@@ -10,6 +10,10 @@ import (
 	"github.com/wgtunnel/backend/vpn/router/osrouter"
 )
 
+// retryCreateAfterStale is true because removeStaleTun can free the name for a second
+// CreateTUN.
+const retryCreateAfterStale = true
+
 func desktopIfaceExists(ifName string) bool {
 	_, err := netlink.LinkByName(ifName)
 	return err == nil

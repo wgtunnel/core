@@ -23,6 +23,19 @@ internal object DesktopVpnRuntime : VpnRuntime {
         }
     }
 
+
+    private val keepsAdapterOnBounce = System.getProperty("os.name").lowercase().contains("win")
+
+    // Windows only
+    override suspend fun refreshInPlace(handle: Int, config: Config): Boolean {
+        if (!keepsAdapterOnBounce) return false
+        return try {
+            DesktopVpnBackend.refreshTunnel(handle, config.asQuickString()) >= 0
+        } catch (_: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
     override fun detachVpnTunnelFd(): Int? = null
 
     override fun startHevSocks5Bridge(port: Int, password: String) {
