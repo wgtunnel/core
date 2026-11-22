@@ -500,13 +500,10 @@ func (r *darwinRouter) addHostRoute(addr netip.Addr, gw string) error {
 }
 
 func (r *darwinRouter) syncDNS(newC, prevC *router.Config) error {
-	full := newC.HasAnyDefaultRoute()
-	prevFull := prevC.HasAnyDefaultRoute()
-	dnsChanged := !slices.Equal(newC.DNS, prevC.DNS) || !slices.Equal(newC.SearchDomains, prevC.SearchDomains)
-	if !dnsChanged && full == prevFull {
+	if slices.Equal(newC.DNS, prevC.DNS) && slices.Equal(newC.SearchDomains, prevC.SearchDomains) {
 		return nil
 	}
-	return dns.SetDNS(r.ctx, r.iface, newC.DNS, newC.SearchDomains, full)
+	return dns.SetDNS(r.ctx, r.iface, newC.DNS, newC.SearchDomains)
 }
 
 func (r *darwinRouter) ifconfig(args ...string) error {

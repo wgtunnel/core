@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -266,13 +267,21 @@ func applyFakeDNSOverride(cfg *router.Config, dnsConfigJSON string) {
 	if addr, err := netip.ParseAddr(dnsCfg.FakeDNS); err == nil {
 		fake = append(fake, addr)
 	}
-	if dnsCfg.FakeDNSV6 != "" {
+	hasV6 := slices.ContainsFunc(cfg.TunnelAddrs, func(p netip.Prefix) bool { return p.Addr().Is6() })
+	if dnsCfg.FakeDNSV6 != "" && hasV6 {
 		if addr, err := netip.ParseAddr(dnsCfg.FakeDNSV6); err == nil {
 			fake = append(fake, addr)
 		}
 	}
 	if len(fake) > 0 {
 		cfg.DNS = fake
+		// Route FakeDNS into the TUN so split tunnels reach it
+		for _, addr := range fake {
+			p := netip.PrefixFrom(addr, addr.BitLen())
+			if !slices.Contains(cfg.Routes, p) {
+				cfg.Routes = append(cfg.Routes, p)
+			}
+		}
 	}
 }
 

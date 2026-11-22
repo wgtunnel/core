@@ -3,7 +3,6 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -20,39 +19,46 @@ import (
 const (
 	tag               = "SetDNS"
 	macOSGlobalDNSKey = "State:/Network/Service/FF457792-79C0-4A25-8392-D875BBEACCA6/DNS"
-	resolverDir       = "/etc/resolver"
-	resolverPrefix    = "wgtunnel."
+	// Older versions wrote split DNS files here, still cleaned up on apply and revert
+	resolverDir    = "/etc/resolver"
+	resolverPrefix = "wgtunnel."
 )
 
+// Profile DNS applies to all queries whenever servers are set, matching
+// Linux, Windows, and the WireGuard apps, regardless of AllowedIPs.
 func SetDNS(
 	ctx context.Context,
 	iface string,
 	servers []netip.Addr,
 	searchDomains []string,
-	fullTunnel bool,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	_ = iface
-	if len(servers) == 0 && len(searchDomains) == 0 {
-		log.Debug(tag, "Skipping DNS apply (empty)")
+	_ = removeResolverFiles()
+	usable := usableServers(servers)
+	if len(usable) == 0 {
+		_ = removeGlobalDNS()
+		log.Debug(tag, "Skipping DNS apply (no usable servers, search=%d)", len(searchDomains))
 		return nil
 	}
-	if fullTunnel && len(servers) > 0 {
-		if err := setGlobalDNS(servers, searchDomains); err != nil {
-			return err
-		}
-		_ = removeResolverFiles()
-		log.Debug(tag, "Configured global DNS via scutil (servers=%d search=%d)", len(servers), len(searchDomains))
-		return nil
-	}
-	_ = removeGlobalDNS()
-	if err := writeResolverFiles(servers, searchDomains); err != nil {
+	if err := setGlobalDNS(usable, searchDomains); err != nil {
 		return err
 	}
-	log.Debug(tag, "Configured split DNS via /etc/resolver")
+	log.Debug(tag, "Configured global DNS via scutil (servers=%d search=%d)", len(usable), len(searchDomains))
 	return nil
+}
+
+func usableServers(servers []netip.Addr) []netip.Addr {
+	out := make([]netip.Addr, 0, len(servers))
+	for _, ip := range servers {
+		if ip.Is6() && !nettest.SupportsIPv6() {
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out
 }
 
 func RevertDNS(ctx context.Context, iface string) error {
@@ -87,9 +93,6 @@ func setGlobalDNS(servers []netip.Addr, search []string) error {
 	script.WriteString("d.add SearchOrder # 100000\n")
 	script.WriteString("d.add ServerAddresses *")
 	for _, ip := range servers {
-		if ip.Is6() && !nettest.SupportsIPv6() {
-			continue
-		}
 		script.WriteByte(' ')
 		script.WriteString(ip.String())
 	}
@@ -127,29 +130,6 @@ func removeGlobalDNS() error {
 		return nil
 	}
 	return fmt.Errorf("scutil remove: %s", out)
-}
-
-func writeResolverFiles(servers []netip.Addr, search []string) error {
-	if err := os.MkdirAll(resolverDir, 0755); err != nil {
-		return err
-	}
-	var buf bytes.Buffer
-	buf.WriteString("# wgtunnel split DNS\n")
-	for _, ip := range servers {
-		buf.WriteString("nameserver ")
-		buf.WriteString(ip.String())
-		buf.WriteString("\n")
-	}
-	if len(search) > 0 {
-		buf.WriteString("search")
-		for _, d := range search {
-			buf.WriteByte(' ')
-			buf.WriteString(strings.TrimSuffix(d, "."))
-		}
-		buf.WriteByte('\n')
-	}
-	path := resolverDir + "/" + resolverPrefix + "search"
-	return os.WriteFile(path, buf.Bytes(), 0644)
 }
 
 func removeResolverFiles() error {
