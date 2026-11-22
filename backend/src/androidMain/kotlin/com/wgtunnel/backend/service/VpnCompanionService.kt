@@ -57,8 +57,13 @@ internal class VpnCompanionService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         if (userActivatedShutdown) {
-            stopSelf()
-            return START_NOT_STICKY
+            // Same as VpnService, an explicit start before this instance is destroyed revives it
+            if (intent == null) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            log.d { "CompanionService started again after shutdown, reviving" }
+            userActivatedShutdown = false
         }
         launchForegroundNotification()
         serviceManager.set(this)

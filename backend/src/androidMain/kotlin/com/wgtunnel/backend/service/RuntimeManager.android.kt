@@ -155,7 +155,11 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
 
     actual suspend fun setKillSwitch(config: KillSwitchConfig?) {
         if (config == null) {
-            _vpnService.value?.setKillSwitch(null)
+            val service = _vpnService.value ?: return
+            service.setKillSwitch(null)
+            // Lockdown held the VPN session open past its tunnels, so release it unless a
+            // VPN tunnel still uses it
+            if (!service.hasVpnTunnel) destroyVpnRuntime(emptyList())
             return
         }
         getCompanionService()

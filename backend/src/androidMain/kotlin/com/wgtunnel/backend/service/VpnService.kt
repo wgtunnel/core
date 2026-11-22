@@ -74,6 +74,9 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
     @Volatile var isKillSwitchActive = false
 
+    internal val hasVpnTunnel: Boolean
+        get() = vpnTunFd != null
+
     @Volatile private var userActivatedShutdown = false
 
     override fun onCreate() {
@@ -117,7 +120,12 @@ internal class VpnService : android.net.VpnService(), SocketProtector, VpnRuntim
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (userActivatedShutdown) {
-            return START_NOT_STICKY
+            // A start that lands before this instance is destroyed reaches it, not a new one.
+            // Ignoring it left the service started but never registered, so every later start
+            // timed out until the process died.
+            if (intent == null) return START_NOT_STICKY
+            log.d { "VpnService started again after shutdown, reviving" }
+            userActivatedShutdown = false
         }
         serviceManager.set(this)
 

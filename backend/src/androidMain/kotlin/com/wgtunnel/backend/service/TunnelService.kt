@@ -53,6 +53,8 @@ internal class TunnelService : LifecycleService(), TunnelRuntime {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // A start before a shut down instance is destroyed revives it
+        userActivatedShutdown = false
         launchForegroundNotification()
         serviceManager.set(this)
 
