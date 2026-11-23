@@ -14,6 +14,8 @@ object FileOwner {
     /** The owning SID of [path], or null if it can't be read or the platform isn't Windows. */
     fun sidOf(path: String): String? {
         if (!available) return null
-        return runCatching { FileOwnerNative.ownerSid(path) }.getOrNull()?.takeIf { it.isNotBlank() }
+        return runCatching { FileOwnerNative.ownerSid(path) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
     }
 }

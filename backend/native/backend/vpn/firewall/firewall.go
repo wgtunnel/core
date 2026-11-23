@@ -26,8 +26,17 @@ type Firewall interface {
 
 	// Disable is a hard reset. It deactivates the kill switch unconditionally and cleans up
 	// all rules and internal requirement state, ignoring any active tunnel's requirement.
-	// Intended for defensive cleanup.
+	// It also removes rules an earlier process left in place.
 	Disable() error
+
+	// HasLeftoverRules reports kill switch rules an earlier process left enforced, read
+	// from the OS when this firewall was created. The OS drops them on reboot.
+	HasLeftoverRules() bool
+
+	// Release leaves the current rules enforced after this process exits, for the next
+	// daemon to take over without a gap. Enabling the kill switch takes leftover rules
+	// over. Disable removes them.
+	Release() error
 
 	// AllowLocalNetworks adds bypass rules for the specified local network prefixes. Requires kill switch enabled and
 	// operates independently of tunnel/router bypasses.

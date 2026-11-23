@@ -23,7 +23,6 @@ internal object DesktopVpnRuntime : VpnRuntime {
         }
     }
 
-
     private val keepsAdapterOnBounce = System.getProperty("os.name").lowercase().contains("win")
 
     // Windows only

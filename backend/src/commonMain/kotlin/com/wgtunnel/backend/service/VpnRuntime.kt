@@ -14,7 +14,8 @@ interface VpnRuntime {
 
     // Windows only
     // Applies config's peers to the running tunnel, reopens its sockets and starts new
-    // handshakes without recreating the tun adapter. False when the platform does not support it, or
+    // handshakes without recreating the tun adapter. False when the platform does not support it,
+    // or
     // it failed.
     suspend fun refreshInPlace(handle: Int, config: Config): Boolean = false
 

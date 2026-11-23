@@ -66,6 +66,9 @@ type LinuxFirewall struct {
 
 	localAddrRules []*nftables.Rule            // For tracking AllowedLocalNetworks rules
 	tunnelRules    map[string][]*nftables.Rule // For tracking iface tunnel bypass rules
+
+	// tables an earlier process left, until taken over or removed
+	leftover bool
 }
 
 func (f *LinuxFirewall) IsPersistent() bool {
@@ -99,8 +102,18 @@ func New() (firewall.Firewall, error) {
 		v6Available: supportsV6,
 		tunnelRules: make(map[string][]*nftables.Rule),
 	}
+	for _, family := range []nftables.TableFamily{nftables.TableFamilyIPv4, nftables.TableFamilyIPv6} {
+		if t, err := getTableIfExists(conn, family, tableName); err == nil && t != nil {
+			f.leftover = true
+		}
+	}
 	return f, nil
 }
+
+func (f *LinuxFirewall) HasLeftoverRules() bool { return f.leftover }
+
+// Release has nothing to do, nftables keeps the tables after this process exits.
+func (f *LinuxFirewall) Release() error { return nil }
 
 func (f *LinuxFirewall) AddTunnelBypasses(iface string) error {
 	if !f.IsEnabled() {
@@ -247,11 +260,7 @@ func (f *LinuxFirewall) deleteMatchingRule(template *nftables.Rule) {
 }
 
 func (f *LinuxFirewall) Disable() error {
-	if !f.IsEnabled() {
-		log.Debug(tag, "Firewall is not enabled, skipping")
-		return nil
-	}
-
+	// No IsEnabled shortcut, the tables may belong to an earlier process.
 	for _, family := range []nftables.TableFamily{nftables.TableFamilyIPv4, nftables.TableFamilyIPv6} {
 		if err := deleteTableIfExists(f.conn, family, tableName); err != nil {
 			log.Error(tag, "delete %s table (%v): %v", tableName, family, err)
@@ -273,6 +282,7 @@ func (f *LinuxFirewall) Disable() error {
 	f.tunnelReqV4.Store(false)
 	f.tunnelReqV6.Store(false)
 	f.persistKillSwitch.Store(false)
+	f.leftover = false
 
 	log.Debug(tag, "Firewall cleaned up and kill switch disabled")
 	return nil
@@ -662,6 +672,13 @@ func (f *LinuxFirewall) reconcile() error {
 		return nil
 	}
 
+	if f.leftover {
+		if err := f.takeOverLeftover(tables); err != nil {
+			return fmt.Errorf("take over leftover kill switch: %w", err)
+		}
+		f.leftover = false
+	}
+
 	if err := f.cleanupLegacySharedTables(); err != nil {
 		log.Error(tag, "cleanup legacy filter/nat jumps: %v", err)
 	}
@@ -863,22 +880,7 @@ func (f *LinuxFirewall) addTunnelInterfaceRule(iface string, table *nftables.Tab
 }
 
 func (f *LinuxFirewall) addVirtIfaceAccept(table *nftables.Table, chain *nftables.Chain) error {
-	key := getIfKeyForChain(chain)
-	for _, pfx := range []string{"docker", "virbr", "veth", "br-", "lxc", "cni-", "podman", "flannel"} {
-		rule := &nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: key, Register: 1},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     []byte(pfx),
-				},
-				&expr.Counter{},
-				&expr.Verdict{Kind: expr.VerdictAccept},
-			},
-		}
+	for _, rule := range virtIfaceAcceptRules(table, chain) {
 		// A prior enable of this family may not have been fully undone by releaseFamily
 		// (which only removes the DROP rules), so guard against re-adding a duplicate on
 		// a later re-enable.
@@ -893,8 +895,91 @@ func (f *LinuxFirewall) addVirtIfaceAccept(table *nftables.Table, chain *nftable
 	return nil
 }
 
+func virtIfaceAcceptRules(table *nftables.Table, chain *nftables.Chain) []*nftables.Rule {
+	key := getIfKeyForChain(chain)
+	var rules []*nftables.Rule
+	for _, pfx := range []string{"docker", "virbr", "veth", "br-", "lxc", "cni-", "podman", "flannel"} {
+		rules = append(rules, &nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: key, Register: 1},
+				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte(pfx),
+				},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
+	}
+	return rules
+}
+
+// takeOverLeftover swaps the tables an earlier process left for this process's base
+// ruleset in one netlink batch. The kernel commits a batch atomically, so traffic stays
+// blocked through the swap. Rules are added in the order addKillSwitchRules uses, so its
+// lookups find them afterwards.
+func (f *LinuxFirewall) takeOverLeftover(tables []*nftable) error {
+	for _, family := range []nftables.TableFamily{nftables.TableFamilyIPv4, nftables.TableFamilyIPv6} {
+		old, err := getTableIfExists(f.conn, family, tableName)
+		if err != nil {
+			return fmt.Errorf("get leftover table: %w", err)
+		}
+		if old != nil {
+			f.conn.DelTable(old)
+		}
+	}
+
+	polAccept := nftables.ChainPolicyAccept
+	for _, table := range tables {
+		t := f.conn.AddTable(&nftables.Table{Family: table.Proto, Name: tableName})
+		in := f.conn.AddChain(&nftables.Chain{
+			Name: chainNameInput, Table: t, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookInput, Priority: nftables.ChainPriorityFilter, Policy: &polAccept,
+		})
+		out := f.conn.AddChain(&nftables.Chain{
+			Name: chainNameOutput, Table: t, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityFilter, Policy: &polAccept,
+		})
+
+		f.conn.InsertRule(loopbackRule(t, in))
+		f.conn.InsertRule(establishedRule(t, in))
+		for _, r := range virtIfaceAcceptRules(t, in) {
+			f.conn.InsertRule(r)
+		}
+		f.conn.AddRule(createDropRule(t, in))
+
+		f.conn.InsertRule(loopbackRule(t, out))
+		f.conn.InsertRule(createFwmarkRule(t, out, mark.LinuxBypassMarkNum))
+		for _, r := range virtIfaceAcceptRules(t, out) {
+			f.conn.InsertRule(r)
+		}
+		f.conn.AddRule(createDropRule(t, out))
+	}
+
+	if err := f.conn.Flush(); err != nil {
+		return err
+	}
+	log.Debug(tag, "Took over kill switch tables left by a previous run")
+	return nil
+}
+
 func (f *LinuxFirewall) addLoopbackRule(table *nftables.Table, chain *nftables.Chain) error {
-	loRule := &nftables.Rule{
+	loRule := loopbackRule(table, chain)
+	existing, err := findRule(f.conn, loRule)
+	if err != nil {
+		return fmt.Errorf("find loopback rule: %w", err)
+	}
+	if existing == nil {
+		f.conn.InsertRule(loRule)
+	}
+	return nil
+}
+
+func loopbackRule(table *nftables.Table, chain *nftables.Chain) *nftables.Rule {
+	return &nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
@@ -912,14 +997,6 @@ func (f *LinuxFirewall) addLoopbackRule(table *nftables.Table, chain *nftables.C
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	}
-	existing, err := findRule(f.conn, loRule)
-	if err != nil {
-		return fmt.Errorf("find loopback rule: %w", err)
-	}
-	if existing == nil {
-		f.conn.InsertRule(loRule)
-	}
-	return nil
 }
 
 // Helper to determine if we should look at Input or Output interface
@@ -931,7 +1008,19 @@ func getIfKeyForChain(chain *nftables.Chain) expr.MetaKey {
 }
 
 func (f *LinuxFirewall) addEstablishedRule(table *nftables.Table, chain *nftables.Chain) error {
-	rule := &nftables.Rule{
+	rule := establishedRule(table, chain)
+	existing, err := findRule(f.conn, rule)
+	if err != nil {
+		return fmt.Errorf("find established rule: %w", err)
+	}
+	if existing == nil {
+		f.conn.InsertRule(rule)
+	}
+	return nil
+}
+
+func establishedRule(table *nftables.Table, chain *nftables.Chain) *nftables.Rule {
+	return &nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
@@ -957,15 +1046,6 @@ func (f *LinuxFirewall) addEstablishedRule(table *nftables.Table, chain *nftable
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	}
-
-	existing, err := findRule(f.conn, rule)
-	if err != nil {
-		return fmt.Errorf("find established rule: %w", err)
-	}
-	if existing == nil {
-		f.conn.InsertRule(rule)
-	}
-	return nil
 }
 
 // createDropRule creates a simple DROP rule with counter

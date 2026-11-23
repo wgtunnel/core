@@ -40,7 +40,9 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
         if (config == null) {
             val rc = DesktopKillSwitchNative.setKillSwitch(0)
             if (rc < 0) {
-                throw BackendException.InternalError("Failed to disable kill switch (native code $rc)")
+                throw BackendException.InternalError(
+                    "Failed to disable kill switch (native code $rc)",
+                )
             }
             return
         }

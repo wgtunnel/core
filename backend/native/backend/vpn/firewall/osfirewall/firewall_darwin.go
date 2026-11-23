@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -31,6 +32,9 @@ const (
 	pfAnchorName = "wgtunnel"
 	// Previous name, flushed so an upgrade does not leave it under Apple's wildcard.
 	pfLegacyAnchorName = "com.apple/wgtunnel"
+	// pf enable references a released firewall still holds. /var/run is cleared on boot,
+	// as are pf rules and references.
+	pfTokenFile = "/var/run/wgtunnel-pf-tokens"
 )
 
 type DarwinFirewall struct {
@@ -52,6 +56,9 @@ type DarwinFirewall struct {
 
 	pfToken string
 
+	// anchor rules an earlier process left, until taken over or removed
+	leftover bool
+
 	// virtual NICs passed so a NAT guest can be forwarded into the tun
 	vmIfaces []string
 	// non-nil while the anchor is loaded and the list is being refreshed.
@@ -59,7 +66,58 @@ type DarwinFirewall struct {
 }
 
 func New() (firewall.Firewall, error) {
-	return &DarwinFirewall{v6Available: nettest.SupportsIPv6()}, nil
+	return &DarwinFirewall{v6Available: nettest.SupportsIPv6(), leftover: anchorHasRules()}, nil
+}
+
+func (f *DarwinFirewall) HasLeftoverRules() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.leftover
+}
+
+// Release keeps the anchor and pf enabled. ensurePF already saved the reference, so
+// whichever process later takes the rules over or removes them drops it.
+func (f *DarwinFirewall) Release() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopVMWatchLocked()
+	f.pfToken = ""
+	return nil
+}
+
+func anchorHasRules() bool {
+	out, err := exec.Command("pfctl", "-a", pfAnchorName, "-sr").CombinedOutput()
+	return err == nil && strings.Contains(string(out), "block")
+}
+
+func appendPFToken(token string) error {
+	fh, err := os.OpenFile(pfTokenFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fmt.Fprintln(fh, token)
+	return err
+}
+
+// releaseSavedPFTokens drops every saved reference except keep, the one this process holds.
+// Earlier processes left the others, whether they released or crashed.
+func releaseSavedPFTokens(keep string) {
+	data, err := os.ReadFile(pfTokenFile)
+	if err != nil {
+		return
+	}
+	for _, token := range strings.Fields(string(data)) {
+		if token != keep {
+			_, _ = exec.Command("pfctl", "-X", token).CombinedOutput()
+		}
+	}
+	_ = os.Remove(pfTokenFile)
+	if keep != "" {
+		if err := appendPFToken(keep); err != nil {
+			log.Error(tag, "save pf token: %v", err)
+		}
+	}
 }
 
 func (f *DarwinFirewall) SetPersist(enabled bool) { f.persistKillSwitch.Store(enabled) }
@@ -225,6 +283,11 @@ func (f *DarwinFirewall) reconcileLocked() error {
 	}
 	f.blockedV4.Store(wantV4)
 	f.blockedV6.Store(wantV6)
+	if f.leftover {
+		// The reload replaced the leftover anchor in one step, so their references can go.
+		releaseSavedPFTokens(f.pfToken)
+		f.leftover = false
+	}
 	f.startVMWatchLocked()
 	log.Debug(tag, "pf kill switch active v4=%v v6=%v tun=%s vm=%v", wantV4, wantV6, f.tunName, f.vmIfaces)
 	return nil
@@ -245,6 +308,10 @@ func (f *DarwinFirewall) ensurePF() (fresh bool, err error) {
 	f.pfToken = parsePFToken(string(out))
 	if f.pfToken == "" {
 		return false, fmt.Errorf("pfctl -E returned no token (%s)", cleanPfctlOutput(out))
+	}
+	// Saved right away, so a later process can drop it even if this one crashes.
+	if err := appendPFToken(f.pfToken); err != nil {
+		log.Error(tag, "save pf token: %v", err)
 	}
 	return true, nil
 }
@@ -319,6 +386,8 @@ func (f *DarwinFirewall) unloadAnchor() {
 	flushAnchor(pfAnchorName)
 	flushAnchor(pfLegacyAnchorName)
 	f.releasePFToken()
+	releaseSavedPFTokens("")
+	f.leftover = false
 }
 
 func flushAnchor(name string) {

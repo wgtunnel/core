@@ -24,12 +24,9 @@ func Get() (firewall.Firewall, error) {
 			return
 		}
 
-		// defensive cleanup
-		if fw.IsEnabled() {
-			log.Debug(tag, "Kill switch was left enabled from previous run, disabling...")
-			if err := fw.Disable(); err != nil {
-				log.Error(tag, "Failed to disable stale kill switch: %v", err)
-			}
+		// Leftover rules stay until the caller takes them over or calls Disable.
+		if fw.HasLeftoverRules() {
+			log.Debug(tag, "Kill switch rules from a previous run are still enforced")
 		}
 
 		instance = fw

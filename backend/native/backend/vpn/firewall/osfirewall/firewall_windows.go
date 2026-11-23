@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -54,7 +55,24 @@ type WindowsFirewall struct {
 	tunRules        []*wf.Rule
 	localAddrRules  []*wf.Rule
 	permittedRoutes map[netip.Prefix][]*wf.Rule
+
+	// rules an earlier process left in our sublayer, until taken over or removed
+	leftover []wf.RuleID
 }
+
+// Fixed IDs so a later process can find what an earlier one left. The session is not
+// dynamic, so its objects outlive the process. They are not persistent, so a reboot
+// drops them, like pf and nftables rules.
+var (
+	wgtProviderID = wf.ProviderID(windows.GUID{
+		Data1: 0x7767746e, Data2: 0x6e75, Data3: 0x4b53,
+		Data4: [8]byte{0x80, 0x01, 0x77, 0x67, 0x74, 0x75, 0x6e, 0x01},
+	})
+	wgtSublayerID = wf.SublayerID(windows.GUID{
+		Data1: 0x7767746e, Data2: 0x6e75, Data3: 0x4b53,
+		Data4: [8]byte{0x80, 0x02, 0x77, 0x67, 0x74, 0x75, 0x6e, 0x02},
+	})
+)
 
 func (f *WindowsFirewall) SetPersist(enabled bool) {
 	f.persistKillSwitch.Store(enabled)
@@ -104,6 +122,13 @@ func New() (firewall.Firewall, error) {
 
 	if err := f.createSession(); err != nil {
 		return nil, err
+	}
+	rules, err := f.ourRules()
+	if err != nil {
+		log.Error(tag, "list leftover WFP rules: %v", err)
+	}
+	for _, r := range rules {
+		f.leftover = append(f.leftover, r.ID)
 	}
 
 	// try to cache the app id once to prevent https://github.com/tailscale/wf/issues/25
@@ -289,7 +314,21 @@ func (f *WindowsFirewall) reconcile() error {
 		f.blockedV6.Store(false)
 	}
 
+	// This process's rules are in place now, so the earlier ones can go without a gap.
+	f.dropLeftover()
 	return nil
+}
+
+func (f *WindowsFirewall) dropLeftover() {
+	for _, id := range f.leftover {
+		if err := f.session.DeleteRule(id); err != nil {
+			log.Error(tag, "Failed to delete leftover rule: %v", err)
+		}
+	}
+	if len(f.leftover) > 0 {
+		log.Debug(tag, "Took over %d WFP rules left by a previous run", len(f.leftover))
+	}
+	f.leftover = nil
 }
 
 // SetTunnelRequirement declares what the active tunnel's own config currently needs.
@@ -447,19 +486,35 @@ func (f *WindowsFirewall) removeRules(rules []*wf.Rule) error {
 func (f *WindowsFirewall) Disable() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// Clean up tunnel-specific rules
-	if err := f.RemoveTunnelRules(); err != nil {
-		log.Error(tag, "Failed to remove tunnel rules on disable: %v", err)
+	if err := f.ensureSession(); err != nil {
+		return fmt.Errorf("ensure WFP session: %w", err)
 	}
-
-	// Close the session and reset pointer, next createSession will overwrite provider and sublayer with fresh GUIDs
-	if f.session != nil {
-		if err := f.session.Close(); err != nil {
-			log.Error(tag, "Failed to close WFP session: %v", err)
+	// Everything in our sublayer, including rules an earlier process left. The session
+	// isn't dynamic, so closing it would leave them enforced.
+	rules, err := f.ourRules()
+	if err != nil {
+		return fmt.Errorf("list WFP rules: %w", err)
+	}
+	for _, r := range rules {
+		if err := f.session.DeleteRule(r.ID); err != nil {
+			log.Error(tag, "Failed to delete rule %s: %v", r.Name, err)
 		}
-		f.session = nil
 	}
+	if err := f.session.DeleteSublayer(f.sublayerID); err != nil {
+		log.Error(tag, "Failed to delete WFP sublayer: %v", err)
+	}
+	if err := f.session.DeleteProvider(f.providerID); err != nil {
+		log.Error(tag, "Failed to delete WFP provider: %v", err)
+	}
+	if err := f.session.Close(); err != nil {
+		log.Error(tag, "Failed to close WFP session: %v", err)
+	}
+	f.session = nil
 
+	f.tunRules = nil
+	f.permittedRoutes = make(map[netip.Prefix][]*wf.Rule)
+	f.localAddrRules = nil
+	f.leftover = nil
 	f.blockedV4.Store(false)
 	f.blockedV6.Store(false)
 	f.blockRulesV4 = nil
@@ -468,7 +523,7 @@ func (f *WindowsFirewall) Disable() error {
 	f.tunnelReqV4.Store(false)
 	f.tunnelReqV6.Store(false)
 	f.persistKillSwitch.Store(false)
-	log.Debug(tag, "Firewall fully disabled and session closed")
+	log.Debug(tag, "Firewall fully disabled")
 	return nil
 }
 
@@ -495,50 +550,86 @@ func (f *WindowsFirewall) addDaemonRule() error {
 	return err
 }
 
-// createSession is the single place where we create a fresh session + provider + sublayer.
+// createSession opens a session and makes sure our provider and sublayer exist. An
+// earlier process may have left both.
 func (f *WindowsFirewall) createSession() error {
 	session, err := wf.New(&wf.Options{
 		Name:        "WG Tunnel firewall",
 		Description: "Manages WG Tunnel firewall rules",
-		Dynamic:     true,
 	})
 	if err != nil {
 		return fmt.Errorf("create WFP session: %w", err)
 	}
 	f.session = session
+	f.providerID = wgtProviderID
+	f.sublayerID = wgtSublayerID
 
-	// fresh provider
-	guid, err := windows.GenerateGUID()
+	providers, err := session.Providers()
 	if err != nil {
-		return err
+		return fmt.Errorf("list WFP providers: %w", err)
 	}
-	f.providerID = wf.ProviderID(guid)
-	if err := f.session.AddProvider(&wf.Provider{
-		ID:   f.providerID,
-		Name: "WG Tunnel provider",
-	}); err != nil {
-		return err
+	if !slices.ContainsFunc(providers, func(p *wf.Provider) bool { return p.ID == f.providerID }) {
+		if err := session.AddProvider(&wf.Provider{
+			ID:   f.providerID,
+			Name: "WG Tunnel provider",
+		}); err != nil {
+			return err
+		}
 	}
 
-	// fresh sublayer. Weight is this sublayer's priority relative to other
-	// sublayers on the system, unrelated to the filter weight constants above, which only
-	// order rules within this sublayer. We max it out so nothing else on the
-	// system can prioritize over our rules.
-	guid, err = windows.GenerateGUID()
+	sublayers, err := session.Sublayers(f.providerID)
 	if err != nil {
-		return err
+		return fmt.Errorf("list WFP sublayers: %w", err)
 	}
-	f.sublayerID = wf.SublayerID(guid)
-	if err := f.session.AddSublayer(&wf.Sublayer{
-		ID:     f.sublayerID,
-		Name:   "WG Tunnel permissive and blocking filters",
-		Weight: math.MaxUint16,
-	}); err != nil {
-		return err
+	// Weight is this sublayer's priority relative to other sublayers on the system,
+	// unrelated to the filter weight constants above, which only order rules within this
+	// sublayer. We max it out so nothing else on the system can prioritize over our rules.
+	if !slices.ContainsFunc(sublayers, func(sl *wf.Sublayer) bool { return sl.ID == f.sublayerID }) {
+		if err := session.AddSublayer(&wf.Sublayer{
+			ID:       f.sublayerID,
+			Name:     "WG Tunnel permissive and blocking filters",
+			Provider: f.providerID,
+			Weight:   math.MaxUint16,
+		}); err != nil {
+			return err
+		}
 	}
 
-	log.Debug(tag, "Created fresh WFP session")
+	log.Debug(tag, "Opened WFP session")
 	return nil
+}
+
+// ourRules lists every rule in our sublayer, whichever process added it.
+func (f *WindowsFirewall) ourRules() ([]*wf.Rule, error) {
+	all, err := f.session.Rules()
+	if err != nil {
+		return nil, err
+	}
+	var out []*wf.Rule
+	for _, r := range all {
+		if r.Sublayer == f.sublayerID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (f *WindowsFirewall) HasLeftoverRules() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.leftover) > 0
+}
+
+// Release closes the session. The session isn't dynamic, so the rules stay enforced.
+func (f *WindowsFirewall) Release() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.session == nil {
+		return nil
+	}
+	err := f.session.Close()
+	f.session = nil
+	return err
 }
 
 // ensureSession reuses the existing session if it's still alive, otherwise creates a new one.

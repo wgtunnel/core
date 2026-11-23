@@ -43,6 +43,52 @@ func setKillSwitch(enabled C.int) C.int {
 	return C.int(enabled)
 }
 
+// hasLeftoverKillSwitch is 1 when an earlier daemon left kill switch rules enforced.
+//
+//export hasLeftoverKillSwitch
+func hasLeftoverKillSwitch() C.int {
+	fw, err := firewallmgr.Get()
+	if err != nil {
+		return 0
+	}
+	if fw.HasLeftoverRules() {
+		return 1
+	}
+	return 0
+}
+
+// releaseKillSwitch keeps the current rules enforced after this process exits.
+//
+//export releaseKillSwitch
+func releaseKillSwitch() C.int {
+	fw, err := firewallmgr.Get()
+	if err != nil {
+		log.Error(tag, "Failed to get firewall: %v", err)
+		return -1
+	}
+	if err := fw.Release(); err != nil {
+		log.Error(tag, "Failed to release kill switch: %v", err)
+		return -1
+	}
+	return 0
+}
+
+// purgeKillSwitch removes every kill switch rule, including ones an earlier daemon left.
+//
+//export purgeKillSwitch
+func purgeKillSwitch() C.int {
+	fw, err := firewallmgr.Get()
+	if err != nil {
+		log.Error(tag, "Failed to get firewall: %v", err)
+		return -1
+	}
+	if err := fw.Disable(); err != nil {
+		log.Error(tag, "Failed to purge kill switch: %v", err)
+		return -1
+	}
+	return 0
+}
+
 //export getKillSwitchStatus
 func getKillSwitchStatus() C.int {
 	fw, err := firewallmgr.Get()
@@ -56,9 +102,11 @@ func getKillSwitchStatus() C.int {
 }
 
 // cidrsCSV: comma-separated prefixes ("192.168.0.0/16,10.0.0.0/8"). Empty clears bypasses.
+// A Go string matches the C side's struct go_string. A *C.char only worked where the
+// struct is passed in registers, and read the struct itself as text on Windows x64.
 //
 //export setKillSwitchAllowedNetworks
-func setKillSwitchAllowedNetworks(cidrsCSV *C.char) C.int {
+func setKillSwitchAllowedNetworks(cidrsCSV string) C.int {
 	fw, err := firewallmgr.Get()
 	if err != nil {
 		log.Error(tag, "Failed to get firewall: %v", err)
@@ -69,11 +117,8 @@ func setKillSwitchAllowedNetworks(cidrsCSV *C.char) C.int {
 		return -1
 	}
 
-	raw := ""
-	if cidrsCSV != nil {
-		raw = C.GoString(cidrsCSV)
-	}
-	raw = strings.TrimSpace(raw)
+	// The JNI side releases the buffer after the call returns.
+	raw := strings.TrimSpace(strings.Clone(cidrsCSV))
 	if raw == "" {
 		if err := fw.RemoveLocalNetworks(); err != nil {
 			log.Error(tag, "RemoveLocalNetworks: %v", err)

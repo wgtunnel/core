@@ -8,6 +8,9 @@ extern int setKillSwitch(int enabled);
 extern int getKillSwitchStatus(void);
 extern int setKillSwitchAllowedNetworks(struct go_string cidrs_csv);
 extern int getKillSwitchAllowedNetworksEnabled(void);
+extern int hasLeftoverKillSwitch(void);
+extern int releaseKillSwitch(void);
+extern int purgeKillSwitch(void);
 
 JNIEXPORT jint JNICALL
 Java_com_wgtunnel_backend_service_DesktopKillSwitchNative_setKillSwitch(
@@ -49,4 +52,31 @@ Java_com_wgtunnel_backend_service_DesktopKillSwitchNative_getKillSwitchAllowedNe
     (void)env;
     (void)clazz;
     return (jint)getKillSwitchAllowedNetworksEnabled();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_system_DesktopFirewallNative_hasLeftoverRules(
+        JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    return (jint)hasLeftoverKillSwitch();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_system_DesktopFirewallNative_release(
+        JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    return (jint)releaseKillSwitch();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_system_DesktopFirewallNative_purge(
+        JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    return (jint)purgeKillSwitch();
 }
