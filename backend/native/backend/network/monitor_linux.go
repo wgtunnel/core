@@ -142,6 +142,10 @@ func isWifiName(name string) bool {
 		strings.HasPrefix(n, "wl")
 }
 
+func isPhysicalType(t NetworkType) bool {
+	return t == NetworkWifi || t == NetworkEthernet
+}
+
 func isTunnelIface(name string) bool {
 	return strings.HasPrefix(name, constants.TunPrefix) ||
 		strings.HasPrefix(name, "tun") ||
@@ -159,15 +163,21 @@ func isDefaultDst(dst *net.IPNet, family int) bool {
 }
 
 func underlayFromDefaultRoute(ctx context.Context, wifiClient *wifi.Client) (NetworkInfo, error) {
+	// A policy routed tunnel hides the physical default from the kernel's
+	// choice, but its own default lives in the tunnel table. The main table
+	// default still names the real underlay, so check it before giving up.
+	hidden := false
 	if info, err := kernelChosenUnderlay(ctx, wifiClient, netlink.FAMILY_V4); err == nil {
 		return info, nil
 	} else if errors.Is(err, errPhysicalDefaultHidden) {
-		return NetworkInfo{}, err
+		hidden = true
 	}
-	if info, err := kernelChosenUnderlay(ctx, wifiClient, netlink.FAMILY_V6); err == nil {
-		return info, nil
-	} else if errors.Is(err, errPhysicalDefaultHidden) {
-		return NetworkInfo{}, err
+	if !hidden {
+		if info, err := kernelChosenUnderlay(ctx, wifiClient, netlink.FAMILY_V6); err == nil {
+			return info, nil
+		} else if errors.Is(err, errPhysicalDefaultHidden) {
+			hidden = true
+		}
 	}
 
 	info, err := defaultRouteUnderlay(ctx, wifiClient, netlink.FAMILY_V4)
@@ -178,7 +188,7 @@ func underlayFromDefaultRoute(ctx context.Context, wifiClient *wifi.Client) (Net
 	if v6err == nil && v6.Type != NetworkDisconnected {
 		return v6, nil
 	}
-	if errors.Is(err, errPhysicalDefaultHidden) || errors.Is(v6err, errPhysicalDefaultHidden) {
+	if hidden || errors.Is(err, errPhysicalDefaultHidden) || errors.Is(v6err, errPhysicalDefaultHidden) {
 		return NetworkInfo{}, errPhysicalDefaultHidden
 	}
 	if err != nil {
@@ -321,8 +331,12 @@ func linkPreference(link netlink.Link) int {
 	}
 }
 
+// bestPhysicalUnderlay guesses the underlay while a tunnel hides the default.
+// Only Wi-Fi or ethernet is sticky or preferred. A Docker or libvirt bridge
+// keeps its address while the Wi-Fi briefly has none, and must not hold the
+// slot once the Wi-Fi is back.
 func bestPhysicalUnderlay(ctx context.Context, wifiClient *wifi.Client, prev NetworkInfo) (NetworkInfo, error) {
-	if prev.HasUsableUnderlay() {
+	if prev.HasUsableUnderlay() && isPhysicalType(prev.Type) {
 		refreshed, err := networkInfoFromLinkIndex(ctx, wifiClient, int(prev.IfIndex))
 		if err == nil && (refreshed.HasIPv4 || refreshed.HasIPv6) {
 			if link, lerr := netlink.LinkByIndex(int(prev.IfIndex)); lerr == nil {
@@ -338,6 +352,7 @@ func bestPhysicalUnderlay(ctx context.Context, wifiClient *wifi.Client, prev Net
 		return NetworkInfo{Type: NetworkDisconnected}, err
 	}
 
+	fallback := NetworkInfo{Type: NetworkDisconnected}
 	for _, link := range links {
 		attrs := link.Attrs()
 		if attrs.Flags&net.FlagUp == 0 {
@@ -351,7 +366,15 @@ func bestPhysicalUnderlay(ctx context.Context, wifiClient *wifi.Client, prev Net
 		if ierr != nil || (!info.HasIPv4 && !info.HasIPv6) {
 			continue
 		}
-		return info, nil
+		if isPhysicalType(info.Type) {
+			return info, nil
+		}
+		if fallback.Type == NetworkDisconnected {
+			fallback = info
+		}
+	}
+	if fallback.Type != NetworkDisconnected {
+		return fallback, nil
 	}
 	return NetworkInfo{Type: NetworkDisconnected}, nil
 }
