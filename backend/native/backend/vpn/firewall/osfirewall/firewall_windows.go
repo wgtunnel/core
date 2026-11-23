@@ -58,6 +58,9 @@ type WindowsFirewall struct {
 
 	// rules an earlier process left in our sublayer, until taken over or removed
 	leftover []wf.RuleID
+	// every rule this process added and hasn't deleted, so Release can re-add them as
+	// persistent
+	added map[wf.RuleID]*wf.Rule
 }
 
 // Fixed IDs so a later process can find what an earlier one left. The session is not
@@ -118,6 +121,7 @@ func New() (firewall.Firewall, error) {
 	f := &WindowsFirewall{
 		permittedRoutes: make(map[netip.Prefix][]*wf.Rule),
 		tunRules:        make([]*wf.Rule, 0),
+		added:           make(map[wf.RuleID]*wf.Rule),
 	}
 
 	if err := f.createSession(); err != nil {
@@ -479,6 +483,7 @@ func (f *WindowsFirewall) removeRules(rules []*wf.Rule) error {
 			log.Error(tag, "Failed to delete rule %s: %v", rule.Name, err)
 			// Continue to try deleting others
 		}
+		delete(f.added, rule.ID)
 	}
 	return nil
 }
@@ -515,6 +520,7 @@ func (f *WindowsFirewall) Disable() error {
 	f.permittedRoutes = make(map[netip.Prefix][]*wf.Rule)
 	f.localAddrRules = nil
 	f.leftover = nil
+	f.added = make(map[wf.RuleID]*wf.Rule)
 	f.blockedV4.Store(false)
 	f.blockedV6.Store(false)
 	f.blockRulesV4 = nil
@@ -569,9 +575,12 @@ func (f *WindowsFirewall) createSession() error {
 		return fmt.Errorf("list WFP providers: %w", err)
 	}
 	if !slices.ContainsFunc(providers, func(p *wf.Provider) bool { return p.ID == f.providerID }) {
+		// Persistent so persistent filters can reference it. Without filters it has no
+		// effect, and Disable deletes it.
 		if err := session.AddProvider(&wf.Provider{
-			ID:   f.providerID,
-			Name: "WG Tunnel provider",
+			ID:         f.providerID,
+			Name:       "WG Tunnel provider",
+			Persistent: true,
 		}); err != nil {
 			return err
 		}
@@ -586,10 +595,11 @@ func (f *WindowsFirewall) createSession() error {
 	// sublayer. We max it out so nothing else on the system can prioritize over our rules.
 	if !slices.ContainsFunc(sublayers, func(sl *wf.Sublayer) bool { return sl.ID == f.sublayerID }) {
 		if err := session.AddSublayer(&wf.Sublayer{
-			ID:       f.sublayerID,
-			Name:     "WG Tunnel permissive and blocking filters",
-			Provider: f.providerID,
-			Weight:   math.MaxUint16,
+			ID:         f.sublayerID,
+			Name:       "WG Tunnel permissive and blocking filters",
+			Provider:   f.providerID,
+			Weight:     math.MaxUint16,
+			Persistent: true,
 		}); err != nil {
 			return err
 		}
@@ -621,15 +631,51 @@ func (f *WindowsFirewall) HasLeftoverRules() bool {
 }
 
 // Release closes the session. The session isn't dynamic, so the rules stay enforced.
-func (f *WindowsFirewall) Release() error {
+// With acrossReboot they are re-added as persistent filters first, which Windows enforces
+// at the next boot before the service starts.
+func (f *WindowsFirewall) Release(acrossReboot bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.session == nil {
 		return nil
 	}
+	if acrossReboot {
+		f.persistLocked()
+	}
 	err := f.session.Close()
 	f.session = nil
 	return err
+}
+
+// persistLocked swaps each rule for a persistent copy, adding the copy before deleting the
+// original so nothing is unblocked in between. A rule that can't be copied still blocks
+// until reboot.
+func (f *WindowsFirewall) persistLocked() {
+	copied := 0
+	for id, r := range f.added {
+		if r.Persistent {
+			continue
+		}
+		guid, err := windows.GenerateGUID()
+		if err != nil {
+			log.Error(tag, "persist rule %s: %v", r.Name, err)
+			continue
+		}
+		c := *r
+		c.ID = wf.RuleID(guid)
+		c.Persistent = true
+		if err := f.session.AddRule(&c); err != nil {
+			log.Error(tag, "persist rule %s: %v", r.Name, err)
+			continue
+		}
+		if err := f.session.DeleteRule(id); err != nil {
+			log.Error(tag, "delete rule %s after persisting: %v", r.Name, err)
+		}
+		delete(f.added, id)
+		f.added[c.ID] = &c
+		copied++
+	}
+	log.Debug(tag, "Kept %d WFP rules across reboot", copied)
 }
 
 // ensureSession reuses the existing session if it's still alive, otherwise creates a new one.
@@ -854,6 +900,7 @@ func (f *WindowsFirewall) addRules(name string, w weight, conditions []*wf.Match
 		if err := f.session.AddRule(r); err != nil {
 			return nil, err
 		}
+		f.added[r.ID] = r
 		rules = append(rules, r)
 	}
 	return rules, nil

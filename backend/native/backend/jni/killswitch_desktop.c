@@ -9,7 +9,7 @@ extern int getKillSwitchStatus(void);
 extern int setKillSwitchAllowedNetworks(struct go_string cidrs_csv);
 extern int getKillSwitchAllowedNetworksEnabled(void);
 extern int hasLeftoverKillSwitch(void);
-extern int releaseKillSwitch(void);
+extern int releaseKillSwitch(int across_reboot);
 extern int purgeKillSwitch(void);
 
 JNIEXPORT jint JNICALL
@@ -65,11 +65,11 @@ Java_com_wgtunnel_backend_system_DesktopFirewallNative_hasLeftoverRules(
 
 JNIEXPORT jint JNICALL
 Java_com_wgtunnel_backend_system_DesktopFirewallNative_release(
-        JNIEnv *env, jclass clazz)
+        JNIEnv *env, jclass clazz, jint across_reboot)
 {
     (void)env;
     (void)clazz;
-    return (jint)releaseKillSwitch();
+    return (jint)releaseKillSwitch((int)across_reboot);
 }
 
 JNIEXPORT jint JNICALL

@@ -113,7 +113,7 @@ func New() (firewall.Firewall, error) {
 func (f *LinuxFirewall) HasLeftoverRules() bool { return f.leftover }
 
 // Release has nothing to do, nftables keeps the tables after this process exits.
-func (f *LinuxFirewall) Release() error { return nil }
+func (f *LinuxFirewall) Release(bool) error { return nil }
 
 func (f *LinuxFirewall) AddTunnelBypasses(iface string) error {
 	if !f.IsEnabled() {

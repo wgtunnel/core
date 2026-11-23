@@ -1,11 +1,12 @@
 package com.wgtunnel.backend.system
 
 import com.wgtunnel.backend.loadBackendNativeLibrary
+import com.wgtunnel.backend.service.DesktopKillSwitchNative
 
 internal object DesktopFirewallNative {
     @JvmStatic external fun hasLeftoverRules(): Int
 
-    @JvmStatic external fun release(): Int
+    @JvmStatic external fun release(acrossReboot: Int): Int
 
     @JvmStatic external fun purge(): Int
 }
@@ -22,10 +23,24 @@ object DesktopFirewall {
     fun hasLeftoverRules(): Boolean = available && DesktopFirewallNative.hasLeftoverRules() == 1
 
     /**
-     * Keeps the current rules enforced after this process exits. Enabling the kill switch in the
-     * next process takes them over without a gap.
+     * Turns the kill switch on with [allowedIps] reachable, without the rest of the backend.
+     * Takes over leftover rules without a gap. For the start of the daemon and early boot.
      */
-    fun release(): Boolean = available && DesktopFirewallNative.release() == 0
+    fun enforce(allowedIps: Collection<String>): Boolean {
+        if (!available) return false
+        if (DesktopKillSwitchNative.setKillSwitch(1) < 0) return false
+        val csv = allowedIps.joinToString(",") { it.trim() }
+        return DesktopKillSwitchNative.setKillSwitchAllowedNetworks(csv) >= 0
+    }
+
+    /**
+     * Keeps the current rules enforced after this process exits. Enabling the kill switch in
+     * the next process takes them over without a gap. With [acrossReboot], Windows keeps them
+     * through a reboot, enforced before the service starts. Elsewhere the OS drops them on
+     * reboot.
+     */
+    fun release(acrossReboot: Boolean = false): Boolean =
+        available && DesktopFirewallNative.release(if (acrossReboot) 1 else 0) == 0
 
     /** Removes every kill switch rule, including ones an earlier daemon left. */
     fun purge(): Boolean = available && DesktopFirewallNative.purge() == 0

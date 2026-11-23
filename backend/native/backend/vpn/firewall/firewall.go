@@ -35,8 +35,10 @@ type Firewall interface {
 
 	// Release leaves the current rules enforced after this process exits, for the next
 	// daemon to take over without a gap. Enabling the kill switch takes leftover rules
-	// over. Disable removes them.
-	Release() error
+	// over. Disable removes them. With acrossReboot, Windows also keeps them through a
+	// reboot, enforced before the service starts. Elsewhere the OS drops them on reboot
+	// and an early boot step puts them back.
+	Release(acrossReboot bool) error
 
 	// AllowLocalNetworks adds bypass rules for the specified local network prefixes. Requires kill switch enabled and
 	// operates independently of tunnel/router bypasses.

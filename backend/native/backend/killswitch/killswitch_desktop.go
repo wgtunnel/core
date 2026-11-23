@@ -57,16 +57,17 @@ func hasLeftoverKillSwitch() C.int {
 	return 0
 }
 
-// releaseKillSwitch keeps the current rules enforced after this process exits.
+// releaseKillSwitch keeps the current rules enforced after this process exits. With
+// acrossReboot set, Windows keeps them through a reboot too.
 //
 //export releaseKillSwitch
-func releaseKillSwitch() C.int {
+func releaseKillSwitch(acrossReboot C.int) C.int {
 	fw, err := firewallmgr.Get()
 	if err != nil {
 		log.Error(tag, "Failed to get firewall: %v", err)
 		return -1
 	}
-	if err := fw.Release(); err != nil {
+	if err := fw.Release(acrossReboot == 1); err != nil {
 		log.Error(tag, "Failed to release kill switch: %v", err)
 		return -1
 	}

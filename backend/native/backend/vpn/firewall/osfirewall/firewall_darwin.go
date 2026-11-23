@@ -77,7 +77,7 @@ func (f *DarwinFirewall) HasLeftoverRules() bool {
 
 // Release keeps the anchor and pf enabled. ensurePF already saved the reference, so
 // whichever process later takes the rules over or removes them drops it.
-func (f *DarwinFirewall) Release() error {
+func (f *DarwinFirewall) Release(bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopVMWatchLocked()
