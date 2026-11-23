@@ -13,6 +13,7 @@ import (
 	_ "github.com/wgtunnel/backend/resume"
 	_ "github.com/wgtunnel/backend/statusnotify"
 	_ "github.com/wgtunnel/backend/vpn"
+	_ "github.com/wgtunnel/backend/winsec"
 )
 
 func main() {}

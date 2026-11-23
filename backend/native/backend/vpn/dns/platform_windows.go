@@ -52,15 +52,21 @@ func SetDNS(
 		return err
 	}
 
+	// Windows keeps adapter DNS across runs, so a family with nothing to set
+	// is flushed rather than left holding servers from an earlier session.
 	if len(v4) > 0 || len(searchDomains) > 0 {
 		if err := luid.SetDNS(windows.AF_INET, v4, searchDomains); err != nil {
 			return fmt.Errorf("set v4 dns: %w", err)
 		}
+	} else if err := luid.FlushDNS(windows.AF_INET); err != nil {
+		log.Debug(tag, "flush stale v4 dns on %s: %v", iface, err)
 	}
 	if len(v6) > 0 || len(searchDomains) > 0 {
 		if err := luid.SetDNS(windows.AF_INET6, v6, searchDomains); err != nil {
 			return fmt.Errorf("set v6 dns: %w", err)
 		}
+	} else if err := luid.FlushDNS(windows.AF_INET6); err != nil {
+		log.Debug(tag, "flush stale v6 dns on %s: %v", iface, err)
 	}
 	log.Debug(tag, "Configured DNS on %s (v4=%d v6=%d search=%d)",
 		iface, len(v4), len(v6), len(searchDomains))
