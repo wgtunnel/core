@@ -83,24 +83,42 @@ func (f *DarwinFirewall) vmWatchLoop(stop <-chan struct{}) {
 	}
 }
 
-// refreshVMPass reloads the anchor when a virtual NIC appears or goes away
-// after the kill switch was enabled.
+// refreshVMPass runs on every watch tick. It puts the anchor call back when a
+// pf reload dropped it, and reloads the anchor when a virtual NIC appears or
+// goes away after the kill switch was enabled.
 func (f *DarwinFirewall) refreshVMPass() {
 	names := listVMPassIfaces()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.vmStop == nil || slices.Equal(f.vmIfaces, names) {
+	if f.vmStop == nil {
+		return
+	}
+	wantV4, wantV6 := f.anchorFamilies()
+	if !wantV4 && !wantV6 {
+		return
+	}
+	// A failed or rolled back insert would leave the block unattached, so a
+	// call inserted here stays even if the reload below fails. The body it
+	// calls still holds the last good ruleset.
+	inserted, err := f.ensureAnchorCall()
+	if err != nil {
+		log.Error(tag, "pf anchor call check: %v", err)
+		return
+	}
+	if inserted {
+		log.Error(tag, "pf anchor call was missing from the main ruleset, restored")
+	}
+	if !inserted && slices.Equal(f.vmIfaces, names) {
 		return
 	}
 	prev := f.vmIfaces
 	f.vmIfaces = names
-	wantV4, wantV6 := f.anchorFamilies()
-	if !wantV4 && !wantV6 {
-		f.vmIfaces = prev
-		return
-	}
 	if err := f.loadAnchor(wantV4, wantV6); err != nil {
 		f.vmIfaces = prev
 		log.Error(tag, "vm pass refresh: %v", err)
+		return
+	}
+	if err := killBlockedPFStates(f.keepLocked()); err != nil {
+		log.Error(tag, "vm pass state kill: %v", err)
 	}
 }

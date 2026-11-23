@@ -11,6 +11,7 @@ package osfirewall
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
 	"strings"
@@ -25,9 +26,11 @@ import (
 
 const (
 	tag = "Firewall"
-	// Sub-anchor to not replace main ruleset
-	pfAnchorName = "com.apple/wgtunnel"
-	pfMainAnchor = `anchor "com.apple/*"`
+	// Top-level anchor call inserted into the live main ruleset. A sub-anchor
+	// under com.apple/* is only evaluated when that wildcard is already loaded.
+	pfAnchorName = "wgtunnel"
+	// Previous name, flushed so an upgrade does not leave it under Apple's wildcard.
+	pfLegacyAnchorName = "com.apple/wgtunnel"
 )
 
 type DarwinFirewall struct {
@@ -52,7 +55,7 @@ type DarwinFirewall struct {
 	// virtual NICs passed so a NAT guest can be forwarded into the tun
 	vmIfaces []string
 	// non-nil while the anchor is loaded and the list is being refreshed.
-	vmStop   chan struct{}
+	vmStop chan struct{}
 }
 
 func New() (firewall.Firewall, error) {
@@ -66,16 +69,27 @@ func (f *DarwinFirewall) IsEnabled() bool         { return f.blockedV4.Load() ||
 func (f *DarwinFirewall) SetTunnelRequirement(v4, v6 bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	prev4, prev6 := f.tunnelReqV4.Load(), f.tunnelReqV6.Load()
 	f.tunnelReqV4.Store(v4)
 	f.tunnelReqV6.Store(v6)
-	return f.reconcileLocked()
+	if err := f.reconcileLocked(); err != nil {
+		f.tunnelReqV4.Store(prev4)
+		f.tunnelReqV6.Store(prev6)
+		return err
+	}
+	return nil
 }
 
 func (f *DarwinFirewall) SetIndependentLockdown(enabled bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	prev := f.persistKillSwitch.Load()
 	f.persistKillSwitch.Store(enabled)
-	return f.reconcileLocked()
+	if err := f.reconcileLocked(); err != nil {
+		f.persistKillSwitch.Store(prev)
+		return err
+	}
+	return nil
 }
 
 func (f *DarwinFirewall) AddTunnelBypasses(iface string) error {
@@ -149,6 +163,10 @@ func (f *DarwinFirewall) IsAllowLocalNetworksEnabled() bool {
 func (f *DarwinFirewall) Disable() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	prev4, prev6 := f.tunnelReqV4.Load(), f.tunnelReqV6.Load()
+	prevPersist := f.persistKillSwitch.Load()
+	prevTun, prevPort := f.tunName, f.listenPort
+	prevLocal, prevPeer := f.localNets, f.peerPass
 	f.tunnelReqV4.Store(false)
 	f.tunnelReqV6.Store(false)
 	f.persistKillSwitch.Store(false)
@@ -156,7 +174,17 @@ func (f *DarwinFirewall) Disable() error {
 	f.listenPort = 0
 	f.localNets = nil
 	f.peerPass = nil
-	return f.reconcileLocked()
+	if err := f.reconcileLocked(); err != nil {
+		f.tunnelReqV4.Store(prev4)
+		f.tunnelReqV6.Store(prev6)
+		f.persistKillSwitch.Store(prevPersist)
+		f.tunName = prevTun
+		f.listenPort = prevPort
+		f.localNets = prevLocal
+		f.peerPass = prevPeer
+		return err
+	}
+	return nil
 }
 
 func (f *DarwinFirewall) reconcileLocked() error {
@@ -165,21 +193,34 @@ func (f *DarwinFirewall) reconcileLocked() error {
 	if !wantV4 && !wantV6 {
 		f.stopVMWatchLocked()
 		f.vmIfaces = nil
-		if err := f.unloadAnchor(); err != nil {
-			log.Error(tag, "unload pf anchor: %v", err)
-		}
+		f.unloadAnchor()
 		f.blockedV4.Store(false)
 		f.blockedV6.Store(false)
 		return nil
 	}
 
-	if err := f.ensurePF(); err != nil {
+	freshToken, err := f.ensurePF()
+	if err != nil {
+		return err
+	}
+	inserted, err := f.ensureAnchorCall()
+	if err != nil {
+		if freshToken {
+			f.releasePFToken()
+		}
 		return err
 	}
 	prevVM := f.vmIfaces
 	f.vmIfaces = listVMPassIfaces()
 	if err := f.loadAnchor(wantV4, wantV6); err != nil {
 		f.vmIfaces = prevVM
+		f.abortNewAnchor(freshToken, inserted)
+		return err
+	}
+	// Best effort. A missing legacy anchor is the common case.
+	flushAnchor(pfLegacyAnchorName)
+	if err := killBlockedPFStates(f.keepLocked()); err != nil {
+		f.abortNewAnchor(freshToken, inserted)
 		return err
 	}
 	f.blockedV4.Store(wantV4)
@@ -189,18 +230,56 @@ func (f *DarwinFirewall) reconcileLocked() error {
 	return nil
 }
 
-func (f *DarwinFirewall) ensurePF() error {
-	if f.pfToken == "" {
-		out, err := exec.Command("pfctl", "-E").CombinedOutput()
-		if err != nil && !strings.Contains(string(out), "already enabled") {
-			// -E still prints Token on success; treat "already enabled" as ok
-			if !strings.Contains(strings.ToLower(string(out)), "token") {
-				return fmt.Errorf("pfctl -E: %v (%s)", err, strings.TrimSpace(string(out)))
-			}
-		}
-		f.pfToken = parsePFToken(string(out))
+// ensurePF enables pf with a reference token. fresh is true only when this call took the token.
+func (f *DarwinFirewall) ensurePF() (fresh bool, err error) {
+	if f.pfToken != "" {
+		return false, nil
 	}
-	return f.ensureAnchorRef()
+	out, err := exec.Command("pfctl", "-E").CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "already enabled") {
+		// -E still prints Token on success; treat "already enabled" as ok
+		if !strings.Contains(strings.ToLower(string(out)), "token") {
+			return false, fmt.Errorf("pfctl -E: %v (%s)", err, strings.TrimSpace(string(out)))
+		}
+	}
+	f.pfToken = parsePFToken(string(out))
+	if f.pfToken == "" {
+		return false, fmt.Errorf("pfctl -E returned no token (%s)", cleanPfctlOutput(out))
+	}
+	return true, nil
+}
+
+// ensureAnchorCall inserts anchor "wgtunnel" into the live main ruleset when it is missing.
+// A later pfctl -f /etc/pf.conf drops that call, so the reconcile and the watch loop check again.
+func (f *DarwinFirewall) ensureAnchorCall() (inserted bool, err error) {
+	present, err := hasPFAnchor(pfAnchorName)
+	if err != nil {
+		return false, err
+	}
+	if present {
+		return false, nil
+	}
+	if err := addPFAnchor(pfAnchorName); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// abortNewAnchor drops an anchor this attempt attached. A refresh that did not
+// take the token or insert the call leaves the running ruleset in place.
+func (f *DarwinFirewall) abortNewAnchor(freshToken, inserted bool) {
+	if !freshToken && !inserted {
+		return
+	}
+	flushAnchor(pfAnchorName)
+	if inserted {
+		if err := removePFAnchor(pfAnchorName); err != nil {
+			log.Error(tag, "roll back pf anchor: %v", err)
+		}
+	}
+	if freshToken {
+		f.releasePFToken()
+	}
 }
 
 func parsePFToken(out string) string {
@@ -214,25 +293,6 @@ func parsePFToken(out string) string {
 		}
 	}
 	return ""
-}
-
-// ensureAnchorRef verifies our anchor will actually be evaluated
-func (f *DarwinFirewall) ensureAnchorRef() error {
-	out, err := exec.Command("pfctl", "-sr").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("pfctl -sr: %v (%s)", err, cleanPfctlOutput(out))
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		// HasPrefix on purpose: "scrub-anchor" lines also contain the substring
-		if strings.HasPrefix(strings.TrimSpace(line), pfMainAnchor) {
-			return nil
-		}
-	}
-	return fmt.Errorf(
-		"main pf ruleset has no %s, so anchor %q would never be evaluated; "+
-			"restore the stock /etc/pf.conf (sudo pfctl -f /etc/pf.conf)",
-		pfMainAnchor, pfAnchorName,
-	)
 }
 
 func (f *DarwinFirewall) loadAnchor(wantV4, wantV6 bool) error {
@@ -250,13 +310,27 @@ func (f *DarwinFirewall) loadAnchor(wantV4, wantV6 bool) error {
 	return nil
 }
 
-func (f *DarwinFirewall) unloadAnchor() error {
-	_, _ = exec.Command("pfctl", "-a", pfAnchorName, "-F", "all").CombinedOutput()
-	if f.pfToken != "" {
-		_, _ = exec.Command("pfctl", "-X", f.pfToken).CombinedOutput()
-		f.pfToken = ""
+// unloadAnchor always flushes the anchor body, so a failed remove of the call
+// leaves an empty anchor in the main ruleset and no block rules.
+func (f *DarwinFirewall) unloadAnchor() {
+	if err := removePFAnchor(pfAnchorName); err != nil {
+		log.Error(tag, "remove pf anchor call: %v", err)
 	}
-	return nil
+	flushAnchor(pfAnchorName)
+	flushAnchor(pfLegacyAnchorName)
+	f.releasePFToken()
+}
+
+func flushAnchor(name string) {
+	_, _ = exec.Command("pfctl", "-a", name, "-F", "all").CombinedOutput()
+}
+
+func (f *DarwinFirewall) releasePFToken() {
+	if f.pfToken == "" {
+		return
+	}
+	_, _ = exec.Command("pfctl", "-X", f.pfToken).CombinedOutput()
+	f.pfToken = ""
 }
 
 // cleanPfctlOutput drops the lines Apple's pfctl prints on every invocation regardless of
@@ -299,22 +373,26 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 		b.WriteString("table <wgtunnel_pass> persist\n")
 	}
 
-	b.WriteString("pass quick on lo0 all\n")
+	// flags any picks up TCP mid-stream. With the default S/SA, a connection
+	// opened while pf was off has no state and gets dropped.
+	b.WriteString("pass quick on lo0 all flags any\n")
 	if f.tunName != "" && safeIface(f.tunName) {
-		fmt.Fprintf(&b, "pass quick on %s all\n", f.tunName)
+		fmt.Fprintf(&b, "pass quick on %s all flags any\n", f.tunName)
 	}
 	// A NAT guest arrives on a virtual NIC. Passing it lets the host forward
-	// the packet. The block below still drops whatever then tries to leave on
-	// the physical NIC. Bridges that aren't virtual are not in this list.
+	// the packet into the tun. if-bound keeps the state on that NIC, so the
+	// forwarded packet can't ride it out the physical NIC past the block below.
+	// Bridges that aren't virtual are not in this list.
 	for _, name := range f.vmIfaces {
 		if name == f.tunName || !safeIface(name) {
 			continue
 		}
-		fmt.Fprintf(&b, "pass quick on %s all\n", name)
+		fmt.Fprintf(&b, "pass quick on %s all flags any keep state (if-bound)\n", name)
 	}
 
-	// For tunnel boostrap socket bypass via IP_TOS/IPV6_TCLASS
-	fmt.Fprintf(&b, "pass out quick all tos 0x%02x\n", mark.DarwinBootstrapTOS)
+	// Bootstrap sockets are marked via IP_TOS/IPV6_TCLASS. Any process can set
+	// that mark, so it only counts from root, which the daemon runs as.
+	fmt.Fprintf(&b, "pass out quick proto { tcp udp } all tos 0x%02x user root flags any\n", mark.DarwinBootstrapTOS)
 
 	b.WriteString("pass out quick proto udp from port 68 to port 67\n")
 	b.WriteString("pass in quick proto udp from port 67 to port 68\n")
@@ -330,16 +408,55 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 		fmt.Fprintf(&b, "pass out quick proto udp from port %d\n", f.listenPort)
 	}
 	if len(pass) > 0 {
-		b.WriteString("pass in quick from <wgtunnel_pass> to any\n")
-		b.WriteString("pass out quick from any to <wgtunnel_pass>\n")
+		b.WriteString("pass in quick from <wgtunnel_pass> to any flags any\n")
+		b.WriteString("pass out quick from any to <wgtunnel_pass> flags any\n")
 	}
+	// Outbound return is quick, so it wins over the drop below it. Inbound does
+	// not match "out" and falls through to the drop.
 	if wantV4 {
-		b.WriteString("block drop inet all\n")
+		b.WriteString("block return out quick inet all\n")
+		b.WriteString("block drop quick inet all\n")
 	}
 	if wantV6 {
-		b.WriteString("block drop inet6 all\n")
+		b.WriteString("block return out quick inet6 all\n")
+		b.WriteString("block drop quick inet6 all\n")
 	}
 	return b.String()
+}
+
+// keepLocked describes the traffic the anchor passes, for the state kill.
+func (f *DarwinFirewall) keepLocked() pfKeep {
+	k := pfKeep{tun: f.tunName, listenPort: f.listenPort, vmIfaces: f.vmIfaces}
+	k.pass = append(k.pass, f.localNets...)
+	k.pass = append(k.pass, f.peerPass...)
+	if f.tunName != "" {
+		k.tunNets = ifacePrefixes(f.tunName)
+	}
+	return k
+}
+
+func ifacePrefixes(name string) []netip.Prefix {
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		p, err := netip.ParsePrefix(ipn.String())
+		if err != nil {
+			continue
+		}
+		out = append(out, p.Masked())
+	}
+	return out
 }
 
 func (f *DarwinFirewall) passTable() []string {

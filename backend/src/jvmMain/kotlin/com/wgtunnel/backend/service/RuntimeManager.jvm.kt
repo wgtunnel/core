@@ -4,6 +4,7 @@ import com.wgtunnel.backend.ApplicationProvider
 import com.wgtunnel.backend.DesktopApplicationProvider
 import com.wgtunnel.backend.DesktopVpnBackend
 import com.wgtunnel.backend.WireGuardTunnelEngine
+import com.wgtunnel.backend.exception.BackendException
 import com.wgtunnel.backend.model.KillSwitchConfig
 
 actual class RuntimeManager actual constructor(applicationProvider: ApplicationProvider) {
@@ -37,11 +38,23 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
 
     actual suspend fun setKillSwitch(config: KillSwitchConfig?) {
         if (config == null) {
-            DesktopKillSwitchNative.setKillSwitch(0)
-        } else {
-            DesktopKillSwitchNative.setKillSwitch(1)
-            val csv = config.allowedIps.joinToString(",") { it.trim() }.trim()
-            DesktopKillSwitchNative.setKillSwitchAllowedNetworks(csv)
+            val rc = DesktopKillSwitchNative.setKillSwitch(0)
+            if (rc < 0) {
+                throw BackendException.InternalError("Failed to disable kill switch (native code $rc)")
+            }
+            return
+        }
+        val rc = DesktopKillSwitchNative.setKillSwitch(1)
+        if (rc < 0) {
+            throw BackendException.InternalError("Failed to enable kill switch (native code $rc)")
+        }
+        val csv = config.allowedIps.joinToString(",") { it.trim() }.trim()
+        val nets = DesktopKillSwitchNative.setKillSwitchAllowedNetworks(csv)
+        // The kill switch stays on. Failing open here would drop protection over a LAN list.
+        if (nets < 0) {
+            throw BackendException.InternalError(
+                "Failed to apply kill switch allowed networks (native code $nets)",
+            )
         }
     }
 
