@@ -10,6 +10,8 @@
 package osfirewall
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"net/netip"
@@ -19,6 +21,7 @@ import (
 	"sync/atomic"
 
 	"github.com/tailscale/wf"
+	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"golang.org/x/net/nettest"
@@ -65,7 +68,7 @@ type WindowsFirewall struct {
 
 // Fixed IDs so a later process can find what an earlier one left. The session is not
 // dynamic, so its objects outlive the process. They are not persistent, so a reboot
-// drops them, like pf and nftables rules.
+// drops them, like pf and nftables rules. These are release's; other instances use wfpIDs.
 var (
 	wgtProviderID = wf.ProviderID(windows.GUID{
 		Data1: 0x7767746e, Data2: 0x6e75, Data3: 0x4b53,
@@ -76,6 +79,30 @@ var (
 		Data4: [8]byte{0x80, 0x02, 0x77, 0x67, 0x74, 0x75, 0x6e, 0x02},
 	})
 )
+
+// wfpIDs are the provider and sublayer of this instance. Release keeps the IDs it always had,
+// any other instance gets its own, the same on every run, so its rules never mix with
+// release's.
+func wfpIDs() (wf.ProviderID, wf.SublayerID) {
+	if instance.IsDefault() {
+		return wgtProviderID, wgtSublayerID
+	}
+	n := instance.Name()
+	return wf.ProviderID(nameGUID("wfp-provider/" + n)), wf.SublayerID(nameGUID("wfp-sublayer/" + n))
+}
+
+// nameGUID is a version 5 style GUID (SHA-256 truncated) for name.
+func nameGUID(name string) windows.GUID {
+	sum := sha256.Sum256([]byte("wgtunnel/" + name))
+	g := windows.GUID{
+		Data1: binary.BigEndian.Uint32(sum[0:4]),
+		Data2: binary.BigEndian.Uint16(sum[4:6]),
+		Data3: binary.BigEndian.Uint16(sum[6:8])&0x0fff | 0x5000,
+	}
+	copy(g.Data4[:], sum[8:16])
+	g.Data4[0] = g.Data4[0]&0x3f | 0x80
+	return g
+}
 
 func (f *WindowsFirewall) SetPersist(enabled bool) {
 	f.persistKillSwitch.Store(enabled)
@@ -567,8 +594,7 @@ func (f *WindowsFirewall) createSession() error {
 		return fmt.Errorf("create WFP session: %w", err)
 	}
 	f.session = session
-	f.providerID = wgtProviderID
-	f.sublayerID = wgtSublayerID
+	f.providerID, f.sublayerID = wfpIDs()
 
 	providers, err := session.Providers()
 	if err != nil {

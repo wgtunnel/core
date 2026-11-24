@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
+	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/mark"
@@ -27,9 +28,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	tableName = "wgtunnel"
+// Named after the instance in New, so a beta install's rules never touch release's. Release
+// keeps the names it always had.
+var (
+	tableName             = instance.Default
+	legacyJumpInput       = instance.Default + "-input"
+	legacyJumpOutput      = instance.Default + "-output"
+	legacyJumpForward     = instance.Default + "-forward"
+	legacyJumpPostrouting = instance.Default + "-postrouting"
+)
 
+func useInstanceNames() {
+	n := instance.Name()
+	tableName = n
+	legacyJumpInput = n + "-input"
+	legacyJumpOutput = n + "-output"
+	legacyJumpForward = n + "-forward"
+	legacyJumpPostrouting = n + "-postrouting"
+}
+
+const (
 	// Hook chains in our private table
 	chainNameInput  = "input"
 	chainNameOutput = "output"
@@ -40,10 +58,6 @@ const (
 	legacyChainOutput      = "OUTPUT"
 	legacyChainForward     = "FORWARD"
 	legacyChainPostrouting = "POSTROUTING"
-	legacyJumpInput        = "wgtunnel-input"
-	legacyJumpOutput       = "wgtunnel-output"
-	legacyJumpForward      = "wgtunnel-forward"
-	legacyJumpPostrouting  = "wgtunnel-postrouting"
 
 	tag = "LinuxFirewall"
 )
@@ -80,6 +94,7 @@ func (f *LinuxFirewall) SetPersist(enabled bool) {
 }
 
 func New() (firewall.Firewall, error) {
+	useInstanceNames()
 	conn, err := nftables.New()
 	if err != nil {
 		return nil, fmt.Errorf("nftables connection: %w", err)

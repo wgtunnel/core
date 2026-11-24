@@ -9,6 +9,8 @@ internal object DesktopFirewallNative {
     @JvmStatic external fun release(acrossReboot: Int): Int
 
     @JvmStatic external fun purge(): Int
+
+    @JvmStatic external fun setInstanceName(name: String): Int
 }
 
 /**
@@ -17,14 +19,20 @@ internal object DesktopFirewallNative {
  * over.
  */
 object DesktopFirewall {
+    /**
+     * Names this install's firewall rules, so two variant installs on one machine keep
+     * theirs apart. Read when the native library loads. Unset keeps release's names.
+     */
+    const val INSTANCE_PROP = "wgtunnel.instance"
+
     private val available by lazy { loadBackendNativeLibrary() }
 
     /** Rules an earlier daemon left enforced, read from the OS. */
     fun hasLeftoverRules(): Boolean = available && DesktopFirewallNative.hasLeftoverRules() == 1
 
     /**
-     * Turns the kill switch on with [allowedIps] reachable, without the rest of the backend.
-     * Takes over leftover rules without a gap. For the start of the daemon and early boot.
+     * Turns the kill switch on with [allowedIps] reachable, without the rest of the backend. Takes
+     * over leftover rules without a gap. For the start of the daemon and early boot.
      */
     fun enforce(allowedIps: Collection<String>): Boolean {
         if (!available) return false
@@ -34,10 +42,9 @@ object DesktopFirewall {
     }
 
     /**
-     * Keeps the current rules enforced after this process exits. Enabling the kill switch in
-     * the next process takes them over without a gap. With [acrossReboot], Windows keeps them
-     * through a reboot, enforced before the service starts. Elsewhere the OS drops them on
-     * reboot.
+     * Keeps the current rules enforced after this process exits. Enabling the kill switch in the
+     * next process takes them over without a gap. With [acrossReboot], Windows keeps them through a
+     * reboot, enforced before the service starts. Elsewhere the OS drops them on reboot.
      */
     fun release(acrossReboot: Boolean = false): Boolean =
         available && DesktopFirewallNative.release(if (acrossReboot) 1 else 0) == 0

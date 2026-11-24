@@ -10,6 +10,7 @@ extern int setKillSwitchAllowedNetworks(struct go_string cidrs_csv);
 extern int getKillSwitchAllowedNetworksEnabled(void);
 extern int hasLeftoverKillSwitch(void);
 extern int releaseKillSwitch(int across_reboot);
+extern int setInstanceName(char* name);
 extern int purgeKillSwitch(void);
 
 JNIEXPORT jint JNICALL
@@ -79,4 +80,17 @@ Java_com_wgtunnel_backend_system_DesktopFirewallNative_purge(
     (void)env;
     (void)clazz;
     return (jint)purgeKillSwitch();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_system_DesktopFirewallNative_setInstanceName(
+        JNIEnv *env, jclass clazz, jstring name)
+{
+    (void)clazz;
+    if (name == NULL) return -1;
+    const char *utf = (*env)->GetStringUTFChars(env, name, NULL);
+    if (utf == NULL) return -1;
+    int rc = setInstanceName((char *)utf);
+    (*env)->ReleaseStringUTFChars(env, name, utf);
+    return (jint)rc;
 }

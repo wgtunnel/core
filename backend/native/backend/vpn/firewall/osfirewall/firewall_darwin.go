@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/mark"
@@ -27,15 +28,27 @@ import (
 
 const (
 	tag = "Firewall"
+)
+
+// Named after the instance in New, so a beta install's rules never touch release's. Release
+// keeps the names it always had.
+var (
 	// Top-level anchor call inserted into the live main ruleset. A sub-anchor
 	// under com.apple/* is only evaluated when that wildcard is already loaded.
-	pfAnchorName = "wgtunnel"
+	pfAnchorName = instance.Default
 	// Previous name, flushed so an upgrade does not leave it under Apple's wildcard.
-	pfLegacyAnchorName = "com.apple/wgtunnel"
+	pfLegacyAnchorName = "com.apple/" + instance.Default
 	// pf enable references a released firewall still holds. /var/run is cleared on boot,
 	// as are pf rules and references.
-	pfTokenFile = "/var/run/wgtunnel-pf-tokens"
+	pfTokenFile = "/var/run/" + instance.Default + "-pf-tokens"
 )
+
+func useInstanceNames() {
+	n := instance.Name()
+	pfAnchorName = n
+	pfLegacyAnchorName = "com.apple/" + n
+	pfTokenFile = "/var/run/" + n + "-pf-tokens"
+}
 
 type DarwinFirewall struct {
 	mu sync.Mutex
@@ -66,6 +79,7 @@ type DarwinFirewall struct {
 }
 
 func New() (firewall.Firewall, error) {
+	useInstanceNames()
 	return &DarwinFirewall{v6Available: nettest.SupportsIPv6(), leftover: anchorHasRules()}, nil
 }
 

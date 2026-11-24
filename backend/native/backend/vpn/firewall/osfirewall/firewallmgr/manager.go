@@ -3,6 +3,7 @@ package firewallmgr
 import (
 	"sync"
 
+	installname "github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall"
@@ -19,6 +20,8 @@ const tag = "FirewallManager"
 func Get() (firewall.Firewall, error) {
 	once.Do(func() {
 		var fw firewall.Firewall
+		// The rules are named after the instance, so it can't change once they exist.
+		log.Debug(tag, "Firewall instance %s", installname.Freeze())
 		fw, initErr = osfirewall.New()
 		if initErr != nil {
 			return

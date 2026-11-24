@@ -11,11 +11,24 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall/firewallmgr"
 )
 
 const tag = "KillSwitch"
+
+// setInstanceName names this install's firewall rules, so a beta and a release install keep
+// theirs apart. It must run before the firewall is first used.
+//
+//export setInstanceName
+func setInstanceName(name *C.char) C.int {
+	if err := instance.Set(C.GoString(name)); err != nil {
+		log.Error(tag, "Failed to set instance name: %v", err)
+		return -1
+	}
+	return 0
+}
 
 //export setKillSwitch
 func setKillSwitch(enabled C.int) C.int {
