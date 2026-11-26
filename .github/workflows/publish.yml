@@ -30,7 +30,7 @@ jobs:
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           java-version: ${{ env.JAVA_VERSION }}
@@ -121,7 +121,7 @@ jobs:
           aarch64-w64-mingw32-g++ --version
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           java-version: ${{ env.JAVA_VERSION }}
