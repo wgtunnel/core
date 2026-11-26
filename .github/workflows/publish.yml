@@ -61,6 +61,7 @@ jobs:
       ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
       ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASS }}
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+      STRICT_NATIVES: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,11 +94,13 @@ jobs:
           name: macos-natives
           path: backend/src/jvmMain/resources/natives
 
-      - name: Install mingw-w64 and build tools
+      - name: Install mingw-w64, aarch64 cross gcc and build tools
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             mingw-w64 \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
             make \
             curl \
             ca-certificates
@@ -140,6 +143,18 @@ jobs:
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
           gpgconf --kill gpg-agent || true
           gpg --batch --list-secret-keys --keyid-format LONG
+
+      - name: Build desktop natives
+        run: ./gradlew :backend:buildDesktopNatives --no-configuration-cache --stacktrace --no-daemon
+
+      - name: Verify desktop natives
+        run: |
+          set -euo pipefail
+          for f in linux-x64/libwg.so linux-aarch64/libwg.so win32-x64/wg.dll \
+                   darwin-x64/libwg.dylib darwin-aarch64/libwg.dylib; do
+            test -f "backend/src/jvmMain/resources/natives/$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          file backend/src/jvmMain/resources/natives/linux-*/libwg.so
 
       - name: Publish to Maven Central
         env:

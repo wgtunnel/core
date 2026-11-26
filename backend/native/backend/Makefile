@@ -20,6 +20,7 @@ export GOCACHE ?= $(BUILDDIR)/go-cache
 
 HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOST_ARCH := $(shell uname -m)
+LINUX_ARM64_CC ?= $(if $(filter aarch64 arm64,$(HOST_ARCH)),gcc,aarch64-linux-gnu-gcc)
 
 # Project JNI headers (vpn_jni.h)
 JNI_INCLUDES := "-I$(CURDIR)/jni/include"
@@ -59,8 +60,16 @@ PLATFORMS := darwin-amd64 darwin-arm64
 else ifeq ($(OS),Windows_NT)
 
 PLATFORMS := windows-amd64
+else ifneq ($(filter aarch64 arm64,$(HOST_ARCH)),)
+PLATFORMS := linux-arm64
 else
 PLATFORMS := linux-amd64 windows-amd64
+# arm64 is cross-compiled when a cross gcc is available. STRICT_NATIVES=1 (CI) makes it required.
+ifneq ($(shell command -v $(LINUX_ARM64_CC) 2>/dev/null),)
+PLATFORMS += linux-arm64
+else ifeq ($(STRICT_NATIVES),1)
+$(error $(LINUX_ARM64_CC) not found, needed for linux-arm64)
+endif
 endif
 
 .PHONY: default desktop android build_all copy_to_resources clean
@@ -127,6 +136,16 @@ $(DESTDIR)/libwg-linux-amd64.so: $(GO_DIR)/.prepared $(GO_SOURCES)
 	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
 		-o "$@" -buildmode=c-shared .
 
+$(DESTDIR)/libwg-linux-arm64.so: $(GO_DIR)/.prepared $(GO_SOURCES)
+	@mkdir -p "$(DESTDIR)"
+	@test -f "$(JAVA_HOME)/include/jni.h" || (echo "jni.h not found; JAVA_HOME=$(JAVA_HOME)"; exit 1)
+	@test -f "$(JAVA_HOME)/include/linux/jni_md.h" || (echo "linux/jni_md.h not found"; exit 1)
+	$(PATCHED_GO) \
+	CGO_ENABLED=1 CGO_CFLAGS='$(DESKTOP_CGO_CFLAGS)' \
+	GOOS=linux GOARCH=arm64 CC=$(LINUX_ARM64_CC) \
+	go build -tags 'notest,cgo' -ldflags="-buildid=" -trimpath -buildvcs=false \
+		-o "$@" -buildmode=c-shared .
+
 # -Wl,--export-all-symbols required for Windows to fix UnsatisfiedLinkError
 ifeq ($(OS),Windows_NT)
 $(DESTDIR)/libwg-windows-amd64.dll: $(GO_SOURCES)
@@ -177,6 +196,7 @@ copy_to_resources: build_all
 		arch=`echo "$$plat" | cut -d- -f2`; \
 		subdir=; \
 		if [ "$$os" = "linux" ] && [ "$$arch" = "amd64" ]; then subdir=linux-x64; fi; \
+		if [ "$$os" = "linux" ] && [ "$$arch" = "arm64" ]; then subdir=linux-aarch64; fi; \
 		if [ "$$os" = "windows" ] && [ "$$arch" = "amd64" ]; then subdir=win32-x64; fi; \
 		if [ "$$os" = "darwin" ] && [ "$$arch" = "amd64" ]; then subdir=darwin-x64; fi; \
 		if [ "$$os" = "darwin" ] && [ "$$arch" = "arm64" ]; then subdir=darwin-aarch64; fi; \
