@@ -82,7 +82,10 @@ func (m *darwinMonitor) Start() error {
 		readCh := make(chan struct{}, 1)
 		go func() {
 			for {
-				_, err := unix.Read(fd, buf)
+				n, err := unix.Read(fd, buf)
+				if err == nil && !IsRouteChange(buf[:n]) {
+					continue
+				}
 				if err == unix.ENOBUFS || err == unix.EINTR {
 					// Route bursts on wake overflow the socket and drop messages,
 					// the socket itself still works. Refresh to catch what was lost.

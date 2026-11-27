@@ -39,6 +39,7 @@ const (
 	tunnelTableID     = 52
 	rulePrioMark      = 100
 	rulePrioExclude   = 150
+	rulePrioPrefix    = 170
 	rulePrioSuppress  = 180
 	rulePrioDefault   = 200
 )
@@ -379,6 +380,11 @@ func (r *linuxRouter) syncRoutingAndRules(link netlink.Link, newC *router.Config
 			if err := r.addSuppressRule(fam); err != nil {
 				return err
 			}
+			if err := r.syncPrefixRules(fam, filterRoutes(newC.Routes, v4)); err != nil {
+				return err
+			}
+		} else {
+			_ = r.syncPrefixRules(fam, nil)
 		}
 
 		if isolated && !usable {
@@ -631,6 +637,92 @@ func isSuppressRule(rule netlink.Rule) bool {
 	return rule.Priority == rulePrioSuppress && rule.Table == unix.RT_TABLE_MAIN && rule.SuppressPrefixlen == 0
 }
 
+// syncPrefixRules gives each split tunnel prefix the longest-match routing wg-quick
+// gets from the main table. The suppress rule alone lets any main route win, so a LAN
+// on the same subnet as an AllowedIPs entry took that traffic off the tunnel. Per
+// prefix, main still wins with a more specific route (a Docker bridge inside a wide
+// AllowedIPs, say) and a tie or anything broader goes to the tunnel.
+//
+// The rules share one priority, where the kernel keeps them in insertion order. Each
+// prefix's pair sits together, narrowest prefix first, so a nested entry is settled
+// before the wider one's main lookup can match it. Any change rebuilds the list.
+func (r *linuxRouter) syncPrefixRules(fam int, routes []netip.Prefix) error {
+	var want []*netlink.Rule
+	seen := map[netip.Prefix]bool{}
+	sorted := slices.Clone(routes)
+	slices.SortStableFunc(sorted, func(a, b netip.Prefix) int { return b.Bits() - a.Bits() })
+	for _, p := range sorted {
+		p = p.Masked()
+		if p.Bits() == 0 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		want = append(want, prefixRules(fam, p)...)
+	}
+
+	rules, err := netlink.RuleList(fam)
+	if err != nil {
+		return fmt.Errorf("list rules fam %d: %w", fam, err)
+	}
+	var have []netlink.Rule
+	for _, rule := range rules {
+		if isPrefixRule(rule) {
+			have = append(have, rule)
+		}
+	}
+	if samePrefixRules(have, want) {
+		return nil
+	}
+	for i := range have {
+		if err := netlink.RuleDel(&have[i]); err != nil {
+			log.Debug(tag, "del prefix rule %v: %v (ignored)", have[i].Dst, err)
+		}
+	}
+	for _, rule := range want {
+		if err := netlink.RuleAdd(rule); err != nil && !isFileExists(err) {
+			return fmt.Errorf("add prefix rule %v table %d: %w", rule.Dst, rule.Table, err)
+		}
+	}
+	return nil
+}
+
+func prefixRules(fam int, p netip.Prefix) []*netlink.Rule {
+	main := netlink.NewRule()
+	main.Family = fam
+	main.Priority = rulePrioPrefix
+	main.Dst = prefixToIPNet(p)
+	main.Table = unix.RT_TABLE_MAIN
+	main.SuppressPrefixlen = p.Bits()
+
+	tunnel := netlink.NewRule()
+	tunnel.Family = fam
+	tunnel.Priority = rulePrioPrefix
+	tunnel.Dst = prefixToIPNet(p)
+	tunnel.Table = tunnelTableID
+	return []*netlink.Rule{main, tunnel}
+}
+
+func samePrefixRules(have []netlink.Rule, want []*netlink.Rule) bool {
+	if len(have) != len(want) {
+		return false
+	}
+	for i, w := range want {
+		h := have[i]
+		if h.Table != w.Table || h.Dst.String() != w.Dst.String() {
+			return false
+		}
+		if w.Table == unix.RT_TABLE_MAIN && h.SuppressPrefixlen != w.SuppressPrefixlen {
+			return false
+		}
+	}
+	return true
+}
+
+func isPrefixRule(rule netlink.Rule) bool {
+	return rule.Priority == rulePrioPrefix && rule.Dst != nil &&
+		(rule.Table == unix.RT_TABLE_MAIN || rule.Table == tunnelTableID)
+}
+
 // deletePolicyRules deletes the policy rules for the family.
 func (r *linuxRouter) deletePolicyRules(fam int) {
 	for _, rule := range r.policyRules[fam] {
@@ -648,6 +740,8 @@ func isTrackedTunnelPolicyRule(rule netlink.Rule) bool {
 		return rule.Mark == mark.LinuxBypassMarkNum && rule.Table == unix.RT_TABLE_MAIN
 	case rulePrioSuppress:
 		return isSuppressRule(rule)
+	case rulePrioPrefix:
+		return isPrefixRule(rule)
 	case rulePrioDefault:
 		return rule.Table == tunnelTableID
 	default:

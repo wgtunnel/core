@@ -12,6 +12,7 @@ extern int hasLeftoverKillSwitch(void);
 extern int releaseKillSwitch(int across_reboot);
 extern int setInstanceName(char* name);
 extern int purgeKillSwitch(void);
+extern int clearTunnelNetworkState(void);
 
 JNIEXPORT jint JNICALL
 Java_com_wgtunnel_backend_service_DesktopKillSwitchNative_setKillSwitch(
@@ -80,6 +81,15 @@ Java_com_wgtunnel_backend_system_DesktopFirewallNative_purge(
     (void)env;
     (void)clazz;
     return (jint)purgeKillSwitch();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_wgtunnel_backend_system_DesktopFirewallNative_clearTunnelNetworkState(
+        JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    return (jint)clearTunnelNetworkState();
 }
 
 JNIEXPORT jint JNICALL

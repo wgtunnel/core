@@ -13,20 +13,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/wgtunnel/backend/log"
 	"github.com/wgtunnel/backend/network"
+	"github.com/wgtunnel/backend/util"
 	"github.com/wgtunnel/backend/vpn/dns"
 	"github.com/wgtunnel/backend/vpn/firewall"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall"
 	"github.com/wgtunnel/backend/vpn/router"
 	"golang.org/x/net/nettest"
+	"golang.org/x/sys/unix"
 )
 
 const tag = "Router"
@@ -34,6 +38,9 @@ const tag = "Router"
 var errRouteExists = errors.New("route exists")
 
 type darwinRouter struct {
+	// mu serializes Set with the route watcher.
+	mu sync.Mutex
+
 	iface       string
 	fw          *osfirewall.DarwinFirewall
 	prevConfig  *router.Config
@@ -51,6 +58,10 @@ type darwinRouter struct {
 	// displaced is the physical route that was present before a successful add
 	// of the same dest/netmask, restored when that tun route is removed.
 	displaced map[netip.Prefix]darwinNetRoute
+	// skipped is prefixes left off the tun because another interface already holds
+	// the same dest/netmask, usually a LAN on the same subnet. The route watcher
+	// retries them, so the tunnel takes them once that network is gone.
+	skipped map[netip.Prefix]struct{}
 
 	// blackhole4/6 are the /1 blackhole routes for a family the tun cannot carry.
 	blackhole4 bool
@@ -72,18 +83,23 @@ func New(iface string, fw firewall.Firewall, tunnel tun.Device) (router.Router, 
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &darwinRouter{
+	r := &darwinRouter{
 		iface:       name,
 		fw:          fw.(*osfirewall.DarwinFirewall),
 		v6Available: nettest.SupportsIPv6(),
 		installed:   make(map[netip.Prefix]struct{}),
 		displaced:   make(map[netip.Prefix]darwinNetRoute),
+		skipped:     make(map[netip.Prefix]struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
-	}, nil
+	}
+	go r.watchRoutes()
+	return r, nil
 }
 
 func (r *darwinRouter) Set(c *router.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	newC := c
 	if newC == nil {
 		newC = &router.Config{}
@@ -116,6 +132,15 @@ func (r *darwinRouter) Set(c *router.Config) error {
 		r.capturePhysicalDefaults()
 	}
 
+	// Drop the service before routes go, so configd restores the physical default
+	// itself. Also clears keys a crashed run left behind.
+	svc4, svc6 := r.tunnelServiceAddrs(newC)
+	if !svc4.IsValid() && !svc6.IsValid() {
+		if err := dns.RemoveTunnelService(); err != nil {
+			log.Error(tag, "remove tunnel service: %v", err)
+		}
+	}
+
 	r.cleanupPreviousState(newC, prevC)
 	if err := r.applyAddresses(newC); err != nil {
 		return err
@@ -131,6 +156,7 @@ func (r *darwinRouter) Set(c *router.Config) error {
 	if err := r.installBlackholes(newC); err != nil {
 		return err
 	}
+	r.syncForwarding(newC)
 	if err := r.protectPeerEndpoints(newC); err != nil {
 		log.Error(tag, "peer endpoint routes: %v", err)
 	}
@@ -138,6 +164,11 @@ func (r *darwinRouter) Set(c *router.Config) error {
 
 	if err := r.syncDNS(newC, prevC); err != nil {
 		log.Error(tag, "sync DNS (continuing): %v", err)
+	}
+	if svc4.IsValid() || svc6.IsValid() {
+		if err := dns.SetTunnelService(r.iface, svc4, svc6); err != nil {
+			log.Error(tag, "publish tunnel service (continuing): %v", err)
+		}
 	}
 
 	r.prevConfig = newC.Clone()
@@ -230,10 +261,8 @@ func (r *darwinRouter) cleanupPreviousState(newC, prevC *router.Config) {
 		if slices.Contains(newC.Routes, rt) {
 			continue
 		}
-		if _, ok := r.installed[rt]; ok {
-			_ = r.route("delete", rt, r.iface, false)
-			delete(r.installed, rt)
-		}
+		r.removeTunRoute(rt)
+		delete(r.skipped, rt)
 		r.restoreDisplaced(rt)
 		if rt.Bits() == 0 {
 			r.restoreDefault(rt.Addr().Is4())
@@ -322,41 +351,152 @@ func (r *darwinRouter) applyRoutes(newC, prevC *router.Config) error {
 			// Still in the config, so cleanup will not remove a tun route
 			// installed while this family was usable.
 			if _, ok := r.installed[rt]; ok {
-				_ = r.route("delete", rt, r.iface, false)
-				delete(r.installed, rt)
+				r.removeTunRoute(rt)
 				r.restoreDisplaced(rt)
 			}
+			delete(r.skipped, rt)
 			continue
 		}
 		// Present last time only means it is already on the tun when that sync
 		// was allowed to install it.
-		if slices.Contains(prevC.Routes, rt) && !familyUnsupported(prevC, rt.Addr().Is4()) {
+		if _, skipped := r.skipped[rt]; !skipped &&
+			slices.Contains(prevC.Routes, rt) && !familyUnsupported(prevC, rt.Addr().Is4()) {
 			continue
 		}
 		if rt.Addr().Is6() && !r.v6Available {
 			continue
 		}
-		existing, exact := r.lookupExactRoute(rt)
-		if exact && existing.iface == r.iface {
-			r.installed[rt] = struct{}{}
-			continue
+		if err := r.installRoute(rt); err != nil {
+			return err
 		}
-		if exact && rt.Bits() != 0 && existing.iface != "" && existing.iface != r.iface {
-			r.displaced[rt] = existing
-		}
-		err := r.route("add", rt, r.iface, false)
-		if errors.Is(err, errRouteExists) {
-			delete(r.displaced, rt)
-			log.Debug(tag, "skip tun route %v: already exists on %s", rt, existing.iface)
-			continue
-		}
-		if err != nil {
-			delete(r.displaced, rt)
-			return fmt.Errorf("route add %v: %w", rt, err)
-		}
-		r.installed[rt] = struct{}{}
 	}
 	return nil
+}
+
+func (r *darwinRouter) installRoute(rt netip.Prefix) error {
+	if rt.Bits() != 0 {
+		if owners, err := routeOwners(); err == nil {
+			tun, other := r.heldBy(owners, rt)
+			if tun {
+				r.installed[rt] = struct{}{}
+				delete(r.skipped, rt)
+				return nil
+			}
+			if other {
+				r.skip(rt)
+				return nil
+			}
+		}
+	}
+	existing, exact := r.lookupExactRoute(rt)
+	if exact && existing.iface == r.iface {
+		r.installed[rt] = struct{}{}
+		delete(r.skipped, rt)
+		return nil
+	}
+	if exact && rt.Bits() != 0 && existing.iface != "" && existing.iface != r.iface {
+		r.displaced[rt] = existing
+	}
+	err := r.route("add", rt, r.iface, false)
+	if errors.Is(err, errRouteExists) {
+		delete(r.displaced, rt)
+		if rt.Bits() == 0 {
+			// Another VPN holds the /1 halves. There is no local network to wait out.
+			log.Error(tag, "%v: another interface already holds the default route halves", rt)
+			return nil
+		}
+		r.skip(rt)
+		return nil
+	}
+	if err != nil {
+		delete(r.displaced, rt)
+		return fmt.Errorf("route add %v: %w", rt, err)
+	}
+	if _, was := r.skipped[rt]; was {
+		log.Debug(tag, "%v now on the tunnel", rt)
+		delete(r.skipped, rt)
+	}
+	r.installed[rt] = struct{}{}
+	return nil
+}
+
+// skip leaves rt off the tun while a local network on the same subnet routes it.
+func (r *darwinRouter) skip(rt netip.Prefix) {
+	if _, seen := r.skipped[rt]; !seen {
+		log.Error(tag, "%v stays off the tunnel: a local network on the same subnet already routes it", rt)
+	}
+	delete(r.installed, rt)
+	r.skipped[rt] = struct{}{}
+}
+
+// removeTunRoute deletes rt only while the tun still holds it. route delete matches on
+// dest/netmask alone, so a prefix macOS has since handed back to a LAN would lose that
+// LAN's connected route instead.
+func (r *darwinRouter) removeTunRoute(rt netip.Prefix) {
+	if _, ok := r.installed[rt]; !ok {
+		return
+	}
+	delete(r.installed, rt)
+	if rt.Bits() != 0 {
+		owners, err := routeOwners()
+		if err != nil {
+			return
+		}
+		if tun, _ := r.heldBy(owners, rt); !tun {
+			return
+		}
+	}
+	_ = r.route("delete", rt, r.iface, false)
+}
+
+func (r *darwinRouter) heldBy(owners map[netip.Prefix][]int, rt netip.Prefix) (tun, other bool) {
+	idx := -1
+	if ifi, err := net.InterfaceByName(r.iface); err == nil {
+		idx = ifi.Index
+	}
+	for _, o := range owners[rt.Masked()] {
+		if o == idx {
+			tun = true
+		} else {
+			other = true
+		}
+	}
+	return tun, other
+}
+
+// reconcileRoutes follows the OS. A network that comes up on the subnet of a tun
+// prefix takes it back (macOS replaces our route with its connected one), and a
+// skipped prefix goes on the tun once its network is gone.
+func (r *darwinRouter) reconcileRoutes() {
+	owners, err := routeOwners()
+	if err != nil {
+		log.Debug(tag, "route table: %v", err)
+		return
+	}
+	for rt := range r.installed {
+		if rt.Bits() == 0 {
+			continue
+		}
+		tun, other := r.heldBy(owners, rt)
+		switch {
+		case tun:
+		case other:
+			r.skip(rt)
+		default:
+			delete(r.installed, rt)
+			if err := r.installRoute(rt); err != nil {
+				log.Error(tag, "reinstall %v: %v", rt, err)
+			}
+		}
+	}
+	for rt := range r.skipped {
+		if _, other := r.heldBy(owners, rt); other {
+			continue
+		}
+		if err := r.installRoute(rt); err != nil {
+			log.Error(tag, "retry %v: %v", rt, err)
+		}
+	}
 }
 
 func (r *darwinRouter) lookupExactRoute(p netip.Prefix) (darwinNetRoute, bool) {
@@ -404,12 +544,18 @@ func (r *darwinRouter) restoreDisplaced(p netip.Prefix) {
 	log.Debug(tag, "restored %v on %s", p, saved.iface)
 }
 
+// protectableEndpoint reports whether a peer endpoint gets a host route via the
+// physical gateway. Private and link-local endpoints are reached over the LAN.
+func protectableEndpoint(p netip.Prefix) bool {
+	return p.IsValid() && !p.Addr().IsPrivate() && !p.Addr().IsLinkLocalUnicast()
+}
+
 func (r *darwinRouter) protectPeerEndpoints(newC *router.Config) error {
 	if r.physicalName == "" {
 		r.capturePhysicalDefaults()
 	}
 	for _, p := range newC.PeerEndpoints {
-		if !p.IsValid() || p.Addr().IsPrivate() || p.Addr().IsLinkLocalUnicast() {
+		if !protectableEndpoint(p) {
 			continue
 		}
 		gw := r.savedGateway4
@@ -429,6 +575,101 @@ func (r *darwinRouter) protectPeerEndpoints(newC *router.Config) error {
 		}
 	}
 	return nil
+}
+
+// watchRoutes keeps the peer endpoint routes in place while the router lives. macOS
+// deletes them when an interface's address is reapplied (DHCP renew, a service
+// toggle, a network switch), which sends the tunnel's own traffic into the tunnel.
+// Like Mullvad, any routing table change re-checks them against the current physical
+// default.
+func (r *darwinRouter) watchRoutes() {
+	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
+	if err != nil {
+		log.Error(tag, "route watch socket: %v", err)
+		return
+	}
+	// A receive timeout lets the reader notice Close without the fd being closed under
+	// a blocked read, where the number could be reused by another open.
+	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1})
+	events := make(chan struct{}, 1)
+	go func() {
+		defer unix.Close(fd)
+		buf := make([]byte, 2048)
+		for r.ctx.Err() == nil {
+			n, err := unix.Read(fd, buf)
+			switch {
+			case err == unix.EAGAIN || err == unix.EINTR:
+				continue
+			case err == nil && !network.IsRouteChange(buf[:n]):
+				continue
+			case err != nil && err != unix.ENOBUFS:
+				log.Error(tag, "route watch read: %v", err)
+				return
+			}
+			select {
+			case events <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	deb := util.NewDebouncer(500 * time.Millisecond)
+	for {
+		select {
+		case <-r.ctx.Done():
+			deb.Stop()
+			return
+		case <-events:
+			deb.Hit()
+		case <-deb.C:
+			deb.Fired()
+			r.reprotectPeerEndpoints()
+		}
+	}
+}
+
+// reprotectPeerEndpoints re-adds peer endpoint host routes that are missing or no
+// longer go through the current physical gateway.
+func (r *darwinRouter) reprotectPeerEndpoints() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prevConfig == nil || r.ctx.Err() != nil {
+		return
+	}
+	d4 := network.LookupPhysicalDefault4()
+	d6 := network.LookupPhysicalDefault6()
+	if d4.IfName != "" {
+		r.physicalName, r.physicalIfIndex, r.savedGateway4 = d4.IfName, d4.IfIndex, d4.Gateway
+	} else if d6.IfName != "" {
+		r.physicalName, r.physicalIfIndex = d6.IfName, d6.IfIndex
+	}
+	if d6.IfName != "" {
+		r.savedGateway6 = d6.Gateway
+	}
+	for _, p := range r.prevConfig.PeerEndpoints {
+		if !protectableEndpoint(p) {
+			continue
+		}
+		addr := p.Addr()
+		gw, live := r.savedGateway4, d4.IfName != ""
+		if addr.Is6() {
+			gw, live = r.savedGateway6, d6.IfName != ""
+		}
+		// With no physical network there is nothing to route through yet.
+		if gw == "" || !live {
+			continue
+		}
+		if rt, ok := r.lookupExactRoute(netip.PrefixFrom(addr, addr.BitLen())); ok && rt.gateway == gw {
+			continue
+		}
+		_ = r.deleteHostRoute(addr)
+		if err := r.addHostRoute(addr, gw); err != nil {
+			log.Error(tag, "re-protect peer %v via %s: %v", addr, gw, err)
+			continue
+		}
+		log.Debug(tag, "re-protected peer %v via %s", addr, gw)
+	}
+	r.reconcileRoutes()
 }
 
 func (r *darwinRouter) capturePhysicalDefaults() {
@@ -497,6 +738,41 @@ func (r *darwinRouter) addHostRoute(addr netip.Addr, gw string) error {
 		return fmt.Errorf("%v: %v (%s)", args, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// syncForwarding keeps the forwarding rules on while the tunnel routes anything, see
+// forwardAnchor.
+func (r *darwinRouter) syncForwarding(c *router.Config) {
+	if len(c.Routes) == 0 {
+		PurgeForwarding()
+		return
+	}
+	mtu := c.MTU
+	if ifi, err := net.InterfaceByName(r.iface); err == nil {
+		mtu = ifi.MTU
+	}
+	if err := loadForwardRules(r.iface, mtu); err != nil {
+		log.Error(tag, "forwarding rules (continuing): %v", err)
+	}
+}
+
+// tunnelServiceAddrs picks the addresses to publish as the primary service. Only a
+// tunnel that owns both families qualifies. OverridePrimary takes over both, so a
+// split tunnel would lose the physical network's other family.
+func (r *darwinRouter) tunnelServiceAddrs(c *router.Config) (v4, v6 netip.Addr) {
+	if !familyIsolated(c, true) || !familyIsolated(c, false) {
+		return
+	}
+	for _, a := range c.TunnelAddrs {
+		addr := a.Addr()
+		switch {
+		case addr.Is4() && !v4.IsValid() && familyUsable(c, true):
+			v4 = addr
+		case addr.Is6() && !v6.IsValid() && familyUsable(c, false) && r.v6Available:
+			v6 = addr
+		}
+	}
+	return
 }
 
 func (r *darwinRouter) syncDNS(newC, prevC *router.Config) error {
@@ -568,13 +844,15 @@ func (r *darwinRouter) routeSingle(op string, p netip.Prefix, iface string, ifsc
 	}
 	cmd := exec.Command("route", args...)
 	out, err := cmd.CombinedOutput()
+	msg := strings.ToLower(string(out))
+	// route(8) exits 0 after "File exists", so the output is the only signal. Taking it as
+	// added would later delete the LAN's own connected route on cleanup.
+	if op == "add" && strings.Contains(msg, "file exists") {
+		return errRouteExists
+	}
 	if err != nil {
-		msg := strings.ToLower(string(out))
 		if op == "delete" && (strings.Contains(msg, "not in table") || strings.Contains(msg, "not exist")) {
 			return nil
-		}
-		if op == "add" && strings.Contains(msg, "file exists") {
-			return errRouteExists
 		}
 		return fmt.Errorf("%v: %v (%s)", args, err, strings.TrimSpace(string(out)))
 	}

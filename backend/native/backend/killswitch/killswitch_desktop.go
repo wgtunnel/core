@@ -13,7 +13,9 @@ import (
 
 	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
+	"github.com/wgtunnel/backend/vpn/dns"
 	"github.com/wgtunnel/backend/vpn/firewall/osfirewall/firewallmgr"
+	"github.com/wgtunnel/backend/vpn/router/osrouter"
 )
 
 const tag = "KillSwitch"
@@ -87,10 +89,18 @@ func releaseKillSwitch(acrossReboot C.int) C.int {
 	return 0
 }
 
-// purgeKillSwitch removes every kill switch rule, including ones an earlier daemon left.
+// purgeKillSwitch removes every kill switch rule, including ones an earlier daemon left,
+// along with the system network state its tunnels published. Without the latter, a
+// crashed daemon's macOS service entries keep the network down after the rules go.
 //
 //export purgeKillSwitch
 func purgeKillSwitch() C.int {
+	rc := C.int(0)
+	osrouter.PurgeForwarding()
+	if err := dns.PurgeSystemState(); err != nil {
+		log.Error(tag, "Failed to purge tunnel network state: %v", err)
+		rc = -1
+	}
 	fw, err := firewallmgr.Get()
 	if err != nil {
 		log.Error(tag, "Failed to get firewall: %v", err)
@@ -98,6 +108,20 @@ func purgeKillSwitch() C.int {
 	}
 	if err := fw.Disable(); err != nil {
 		log.Error(tag, "Failed to purge kill switch: %v", err)
+		return -1
+	}
+	return rc
+}
+
+// clearTunnelNetworkState removes the network state this install's tunnels publish. The
+// daemon runs it at start, before any tunnel. A run that exited without closing its tunnels
+// leaves that state behind, and a restarted daemon taking over its kill switch kept it.
+//
+//export clearTunnelNetworkState
+func clearTunnelNetworkState() C.int {
+	osrouter.PurgeForwarding()
+	if err := dns.PurgeSystemState(); err != nil {
+		log.Error(tag, "Failed to clear tunnel network state: %v", err)
 		return -1
 	}
 	return 0

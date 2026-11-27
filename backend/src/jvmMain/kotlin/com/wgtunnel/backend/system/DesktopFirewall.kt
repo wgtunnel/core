@@ -11,6 +11,8 @@ internal object DesktopFirewallNative {
     @JvmStatic external fun purge(): Int
 
     @JvmStatic external fun setInstanceName(name: String): Int
+
+    @JvmStatic external fun clearTunnelNetworkState(): Int
 }
 
 /**
@@ -51,4 +53,12 @@ object DesktopFirewall {
 
     /** Removes every kill switch rule, including ones an earlier daemon left. */
     fun purge(): Boolean = available && DesktopFirewallNative.purge() == 0
+
+    /**
+     * Removes the network state this install's tunnels publish, the macOS primary service and DNS
+     * entries. For the start of the daemon, before any tunnel, a daemon that exited without closing
+     * its tunnels leaves them, keeping a tunnel that no longer exists as the primary network.
+     */
+    fun clearTunnelNetworkState(): Boolean =
+        available && DesktopFirewallNative.clearTunnelNetworkState() == 0
 }

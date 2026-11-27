@@ -4,6 +4,8 @@ package dns
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -12,17 +14,41 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wgtunnel/backend/instance"
 	"github.com/wgtunnel/backend/log"
 	"golang.org/x/net/nettest"
 )
 
 const (
-	tag               = "SetDNS"
-	macOSGlobalDNSKey = "State:/Network/Service/FF457792-79C0-4A25-8392-D875BBEACCA6/DNS"
+	tag = "SetDNS"
+	// Release keeps the service IDs it always had, so it still removes what older
+	// versions left. Other installs get their own, see serviceKey.
+	releaseDNSServiceID    = "FF457792-79C0-4A25-8392-D875BBEACCA6"
+	releaseTunnelServiceID = "FF457792-79C0-4A25-8392-D875BBEACCA7"
 	// Older versions wrote split DNS files here, still cleaned up on apply and revert
 	resolverDir    = "/etc/resolver"
 	resolverPrefix = "wgtunnel."
 )
+
+// globalDNSKey holds the tunnel DNS servers.
+func globalDNSKey() string { return serviceKey(releaseDNSServiceID, "dns") + "/DNS" }
+
+// tunnelServiceKey is the service a full tunnel publishes as primary. macOS only sends
+// A/AAAA queries for a family when some network service has a default route for it,
+// so it registers the way a Network Extension VPN does.
+func tunnelServiceKey() string { return serviceKey(releaseTunnelServiceID, "tunnel") }
+
+// serviceKey gives each install its own service, so a beta and a release install never
+// remove or overwrite each other's live entries.
+func serviceKey(releaseID, role string) string {
+	if instance.IsDefault() {
+		return "State:/Network/Service/" + releaseID
+	}
+	h := sha256.Sum256([]byte("wgtunnel/" + instance.Name() + "/" + role))
+	h[6] = h[6]&0x0f | 0x50
+	h[8] = h[8]&0x3f | 0x80
+	return fmt.Sprintf("State:/Network/Service/%X-%X-%X-%X-%X", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+}
 
 // Profile DNS applies to all queries whenever servers are set, matching
 // Linux, Windows, and the WireGuard apps, regardless of AllowedIPs.
@@ -107,7 +133,7 @@ func setGlobalDNS(servers []netip.Addr, search []string) error {
 		script.WriteByte('\n')
 	}
 	script.WriteString("set ")
-	script.WriteString(macOSGlobalDNSKey)
+	script.WriteString(globalDNSKey())
 	script.WriteString("\nquit\n")
 	out, err := runScutil(script.String())
 	if err != nil {
@@ -121,7 +147,7 @@ func setGlobalDNS(servers []netip.Addr, search []string) error {
 }
 
 func removeGlobalDNS() error {
-	out, err := runScutil("remove " + macOSGlobalDNSKey + "\nquit\n")
+	out, err := runScutil("remove " + globalDNSKey() + "\nquit\n")
 	if err != nil {
 		return err
 	}
@@ -130,6 +156,75 @@ func removeGlobalDNS() error {
 		return nil
 	}
 	return fmt.Errorf("scutil remove: %s", out)
+}
+
+// SetTunnelService publishes iface as the primary service for each valid address.
+// An invalid address removes that family.
+func SetTunnelService(iface string, v4, v6 netip.Addr) error {
+	if !v4.IsValid() && !v6.IsValid() {
+		return RemoveTunnelService()
+	}
+	key := tunnelServiceKey()
+	var script strings.Builder
+	writeEntity := func(entity string, addr netip.Addr, lenKey, lenValue string) {
+		if !addr.IsValid() {
+			script.WriteString("remove " + key + "/" + entity + "\n")
+			return
+		}
+		script.WriteString("d.init\n")
+		script.WriteString("d.add Addresses * " + addr.String() + "\n")
+		script.WriteString("d.add " + lenKey + " * " + lenValue + "\n")
+		script.WriteString("d.add Router " + addr.String() + "\n")
+		script.WriteString("d.add InterfaceName ")
+		writeScutilString(&script, iface)
+		script.WriteString("\nd.add OverridePrimary # 1\n")
+		script.WriteString("set " + key + "/" + entity + "\n")
+	}
+	writeEntity("IPv4", v4, "SubnetMasks", "255.255.255.255")
+	writeEntity("IPv6", v6, "PrefixLength #", "128")
+	script.WriteString("quit\n")
+	out, err := runScutil(script.String())
+	if err != nil {
+		return err
+	}
+	if out = onlyScutilErrors(out); out != "" {
+		return fmt.Errorf("scutil set tunnel service: %s", out)
+	}
+	log.Debug(tag, "Published tunnel service (v4=%v v6=%v)", v4.IsValid(), v6.IsValid())
+	return nil
+}
+
+func RemoveTunnelService() error {
+	key := tunnelServiceKey()
+	out, err := runScutil("remove " + key + "/IPv4\nremove " + key + "/IPv6\nquit\n")
+	if err != nil {
+		return err
+	}
+	if out = onlyScutilErrors(out); out != "" {
+		return fmt.Errorf("scutil remove tunnel service: %s", out)
+	}
+	return nil
+}
+
+// PurgeSystemState removes the DNS and tunnel service entries tunnels publish. A
+// daemon that exits without closing its tunnels leaves them behind, and the stale
+// service keeps a utun that no longer exists as the primary network.
+func PurgeSystemState() error {
+	err := errors.Join(RemoveTunnelService(), removeGlobalDNS())
+	_ = removeResolverFiles()
+	return err
+}
+
+// onlyScutilErrors drops the "No such key" lines a remove of a missing key prints.
+func onlyScutilErrors(out string) string {
+	var errs []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && line != "No such key" {
+			errs = append(errs, line)
+		}
+	}
+	return strings.Join(errs, "; ")
 }
 
 func removeResolverFiles() error {
