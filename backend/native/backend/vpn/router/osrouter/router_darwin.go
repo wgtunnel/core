@@ -62,6 +62,9 @@ type darwinRouter struct {
 	// the same dest/netmask, usually a LAN on the same subnet. The route watcher
 	// retries them, so the tunnel takes them once that network is gone.
 	skipped map[netip.Prefix]struct{}
+	// scoped4/6 are the physical defaults scoped to their interface that this router
+	// added, see syncScopedDefaults.
+	scoped4, scoped6 scopedDefault
 
 	// blackhole4/6 are the /1 blackhole routes for a family the tun cannot carry.
 	blackhole4 bool
@@ -114,7 +117,12 @@ func (r *darwinRouter) Set(c *router.Config) error {
 	}
 
 	if err := r.ifconfig(r.iface, "up"); err != nil {
-		return fmt.Errorf("ifconfig up: %w", err)
+		if !newC.Equal(&router.Config{}) {
+			return fmt.Errorf("ifconfig up: %w", err)
+		}
+		// A start that fails after the device closed the tun lands here. The service, DNS,
+		// forwarding and scoped default it published outlive the tun and must still go.
+		log.Debug(tag, "teardown without %s: %v", r.iface, err)
 	}
 
 	if err := r.syncFirewallState(newC); err != nil {
@@ -160,6 +168,7 @@ func (r *darwinRouter) Set(c *router.Config) error {
 	if err := r.protectPeerEndpoints(newC); err != nil {
 		log.Error(tag, "peer endpoint routes: %v", err)
 	}
+	r.syncScopedDefaults(newC)
 	_ = r.fw.UpdatePermittedRoutes(newC.PeerEndpoints)
 
 	if err := r.syncDNS(newC, prevC); err != nil {
@@ -375,7 +384,7 @@ func (r *darwinRouter) applyRoutes(newC, prevC *router.Config) error {
 
 func (r *darwinRouter) installRoute(rt netip.Prefix) error {
 	if rt.Bits() != 0 {
-		if owners, err := routeOwners(); err == nil {
+		if owners, cloned, err := routeOwners(); err == nil {
 			tun, other := r.heldBy(owners, rt)
 			if tun {
 				r.installed[rt] = struct{}{}
@@ -386,6 +395,13 @@ func (r *darwinRouter) installRoute(rt netip.Prefix) error {
 				r.skip(rt)
 				return nil
 			}
+			// A cached host entry is not a route to give back later. Taking it for one
+			// turned an ARP or path cache into a static route on disconnect, which then
+			// kept the next tunnel's route (the FakeDNS /32 on a split tunnel) off it.
+			if cloned[rt.Masked()] {
+				_ = r.deleteHostRoute(rt.Addr())
+			}
+			return r.addTunRoute(rt)
 		}
 	}
 	existing, exact := r.lookupExactRoute(rt)
@@ -397,6 +413,10 @@ func (r *darwinRouter) installRoute(rt netip.Prefix) error {
 	if exact && rt.Bits() != 0 && existing.iface != "" && existing.iface != r.iface {
 		r.displaced[rt] = existing
 	}
+	return r.addTunRoute(rt)
+}
+
+func (r *darwinRouter) addTunRoute(rt netip.Prefix) error {
 	err := r.route("add", rt, r.iface, false)
 	if errors.Is(err, errRouteExists) {
 		delete(r.displaced, rt)
@@ -438,7 +458,7 @@ func (r *darwinRouter) removeTunRoute(rt netip.Prefix) {
 	}
 	delete(r.installed, rt)
 	if rt.Bits() != 0 {
-		owners, err := routeOwners()
+		owners, _, err := routeOwners()
 		if err != nil {
 			return
 		}
@@ -468,7 +488,7 @@ func (r *darwinRouter) heldBy(owners map[netip.Prefix][]int, rt netip.Prefix) (t
 // prefix takes it back (macOS replaces our route with its connected one), and a
 // skipped prefix goes on the tun once its network is gone.
 func (r *darwinRouter) reconcileRoutes() {
-	owners, err := routeOwners()
+	owners, _, err := routeOwners()
 	if err != nil {
 		log.Debug(tag, "route table: %v", err)
 		return
@@ -544,18 +564,12 @@ func (r *darwinRouter) restoreDisplaced(p netip.Prefix) {
 	log.Debug(tag, "restored %v on %s", p, saved.iface)
 }
 
-// protectableEndpoint reports whether a peer endpoint gets a host route via the
-// physical gateway. Private and link-local endpoints are reached over the LAN.
-func protectableEndpoint(p netip.Prefix) bool {
-	return p.IsValid() && !p.Addr().IsPrivate() && !p.Addr().IsLinkLocalUnicast()
-}
-
 func (r *darwinRouter) protectPeerEndpoints(newC *router.Config) error {
 	if r.physicalName == "" {
 		r.capturePhysicalDefaults()
 	}
 	for _, p := range newC.PeerEndpoints {
-		if !protectableEndpoint(p) {
+		if !endpointNeedsProtection(p, newC.TunnelAddrs) {
 			continue
 		}
 		gw := r.savedGateway4
@@ -647,7 +661,7 @@ func (r *darwinRouter) reprotectPeerEndpoints() {
 		r.savedGateway6 = d6.Gateway
 	}
 	for _, p := range r.prevConfig.PeerEndpoints {
-		if !protectableEndpoint(p) {
+		if !endpointNeedsProtection(p, r.prevConfig.TunnelAddrs) {
 			continue
 		}
 		addr := p.Addr()
@@ -670,6 +684,66 @@ func (r *darwinRouter) reprotectPeerEndpoints() {
 		log.Debug(tag, "re-protected peer %v via %s", addr, gw)
 	}
 	r.reconcileRoutes()
+	r.syncScopedDefaults(r.prevConfig)
+}
+
+type scopedDefault struct{ ifName, gw string }
+
+// syncScopedDefaults keeps a default route scoped to the physical interface while the
+// tunnel routes anything. A socket bound to an interface (IP_BOUND_IF), as the peer
+// resolver's are, only finds routes scoped to it.
+func (r *darwinRouter) syncScopedDefaults(c *router.Config) {
+	var want4, want6 scopedDefault
+	if len(c.Routes) > 0 {
+		d4 := network.LookupPhysicalDefault4()
+		want4 = scopedDefault{d4.IfName, d4.Gateway}
+		if r.v6Available {
+			d6 := network.LookupPhysicalDefault6()
+			want6 = scopedDefault{d6.IfName, d6.Gateway}
+		}
+	}
+	r.scoped4 = syncScopedDefault("inet", r.scoped4, want4)
+	r.scoped6 = syncScopedDefault("inet6", r.scoped6, want6)
+}
+
+func plainIfName(n string) bool {
+	if n == "" {
+		return false
+	}
+	for _, c := range n {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// syncScopedDefault moves the scoped default this router added from have to want and
+// returns what it owns afterwards.
+func syncScopedDefault(inet string, have, want scopedDefault) scopedDefault {
+	if !plainIfName(want.ifName) || want.gw == "" || strings.HasPrefix(want.gw, "link#") {
+		want = scopedDefault{}
+	}
+	if have.ifName != "" && have != want {
+		if out, err := exec.Command("route", "-q", "-n", "delete", "-"+inet, "default", "-ifscope", have.ifName).CombinedOutput(); err != nil {
+			log.Debug(tag, "delete scoped default %s on %s: %v (%s)", inet, have.ifName, err, strings.TrimSpace(string(out)))
+		}
+		have = scopedDefault{}
+	}
+	if want.ifName == "" {
+		return scopedDefault{}
+	}
+	out, err := exec.Command("route", "-q", "-n", "add", "-"+inet, "default", want.gw, "-ifscope", want.ifName).CombinedOutput()
+	if strings.Contains(strings.ToLower(string(out)), "file exists") {
+		// Ours from an earlier sync when have is set, macOS's own otherwise.
+		return have
+	}
+	if err != nil {
+		log.Error(tag, "add scoped default %s via %s on %s: %v (%s)", inet, want.gw, want.ifName, err, strings.TrimSpace(string(out)))
+		return have
+	}
+	log.Debug(tag, "scoped default %s via %s on %s", inet, want.gw, want.ifName)
+	return want
 }
 
 func (r *darwinRouter) capturePhysicalDefaults() {

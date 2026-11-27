@@ -32,7 +32,7 @@ func PermitUnderlayPeers(outerConfig string) {
 			continue
 		}
 		addr, err := netip.ParseAddr(host)
-		if err != nil || !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		if err != nil || !addr.IsValid() || !addr.IsGlobalUnicast() {
 			continue
 		}
 		bits := 32

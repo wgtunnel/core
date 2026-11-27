@@ -34,8 +34,10 @@ type pfState struct {
 type pfKeep struct {
 	tun        string
 	listenPort uint16
-	// pass is the pass table: LAN bypass and peer endpoints, matched on the remote side.
+	// pass is the LAN bypass, matched on the remote side.
 	pass []netip.Prefix
+	// peers are the peer endpoints, open to UDP only and matched on the remote side.
+	peers []netip.Prefix
 	// tunNets are the tun subnets, matched on either side.
 	tunNets []netip.Prefix
 	// vmIfaces pass if-bound, so their states carry the NIC name. A guest's
@@ -66,6 +68,11 @@ func keepPFState(st pfState, k pfKeep) bool {
 	if st.proto == protoUDP {
 		if k.listenPort != 0 && st.localPort == k.listenPort {
 			return true
+		}
+		for _, p := range k.peers {
+			if p.Contains(st.remote) {
+				return true
+			}
 		}
 		if (st.localPort == dhcpClientPort && st.remotePort == dhcpServerPort) ||
 			(st.localPort == dhcpServerPort && st.remotePort == dhcpClientPort) {

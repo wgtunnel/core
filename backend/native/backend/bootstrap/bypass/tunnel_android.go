@@ -14,6 +14,9 @@ import (
 	"github.com/wgtunnel/backend/log"
 )
 
+// tunnelOnlyDNS keeps every FakeDNS upstream on the VPN network, so DNS never leaves it.
+const tunnelOnlyDNS = true
+
 func bindTunnelSocket(fd uintptr) error {
 	handle := CurrentVpnNetworkHandle()
 	if handle == 0 {

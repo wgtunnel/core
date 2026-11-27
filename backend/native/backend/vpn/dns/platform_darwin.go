@@ -110,7 +110,7 @@ func ReadUnderlayDNS(ctx context.Context, ifIndex uint32, ifName string) ([]stri
 		}
 	}
 	_ = ifIndex
-	return dnsFromScutil(), nil
+	return dnsFromScutil(ifName), nil
 }
 
 func setGlobalDNS(servers []netip.Addr, search []string) error {
@@ -212,7 +212,37 @@ func RemoveTunnelService() error {
 func PurgeSystemState() error {
 	err := errors.Join(RemoveTunnelService(), removeGlobalDNS())
 	_ = removeResolverFiles()
+	removeFakeDNSRoutes()
 	return err
+}
+
+// fakeDNSAddrs are TunnelDnsConfig's default FakeDNS addresses, from ranges reserved for
+// benchmarking and documentation.
+var fakeDNSAddrs = []string{"198.18.0.2", "2001:db8::53"}
+
+// removeFakeDNSRoutes drops a route to the FakeDNS addresses left on a physical interface.
+func removeFakeDNSRoutes() {
+	for _, a := range fakeDNSAddrs {
+		inet := "-inet"
+		if strings.Contains(a, ":") {
+			inet = "-inet6"
+		}
+		out, err := exec.Command("route", "-n", "get", inet, a).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "destination: "+a) || onTunnelIface(string(out)) {
+			continue
+		}
+		_ = exec.Command("route", "-q", "-n", "delete", inet, "-host", a).Run()
+	}
+}
+
+func onTunnelIface(routeGet string) bool {
+	for _, line := range strings.Split(routeGet, "\n") {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "interface:"); ok {
+			name = strings.TrimSpace(name)
+			return strings.HasPrefix(name, "utun") || strings.HasPrefix(name, "wgtun")
+		}
+	}
+	return false
 }
 
 // onlyScutilErrors drops the "No such key" lines a remove of a missing key prints.
@@ -290,42 +320,88 @@ func dnsFromIPConfig(ifName string) []string {
 	return servers
 }
 
-func dnsFromScutil() []string {
+// dnsFromScutil reads configd's resolvers when DHCP has none, as with a static or IPv6
+// only setup. The interface's scoped resolver is its own DNS. The general list also holds
+// supplemental resolvers, which match only some domains and include the tunnel's own DNS
+// while one is up, so those are skipped.
+func dnsFromScutil(ifName string) []string {
 	out, err := exec.Command("/usr/sbin/scutil", "--dns").CombinedOutput()
 	if err != nil {
 		return nil
 	}
-	var servers []string
-	seen := map[string]bool{}
-	skipBlock := false
-	for _, line := range strings.Split(string(out), "\n") {
+	return pickScutilDNS(parseScutilDNS(string(out)), ifName)
+}
+
+type scutilResolver struct {
+	scoped       bool
+	ifName       string
+	domain       bool
+	supplemental bool
+	servers      []string
+}
+
+func parseScutilDNS(out string) []scutilResolver {
+	var resolvers []scutilResolver
+	scoped := false
+	var cur *scutilResolver
+	for _, line := range strings.Split(out, "\n") {
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "resolver #") {
-			skipBlock = false
-			continue
-		}
-		if strings.Contains(trim, "if_index") && (strings.Contains(trim, "utun") || strings.Contains(trim, "wgtun")) {
-			skipBlock = true
-			continue
-		}
-		if skipBlock {
-			continue
-		}
-		if strings.HasPrefix(trim, "nameserver[") {
-			_, rest, ok := strings.Cut(trim, ":")
+		switch {
+		case strings.HasPrefix(trim, "DNS configuration"):
+			scoped = strings.Contains(trim, "scoped queries")
+			cur = nil
+		case strings.HasPrefix(trim, "resolver #"):
+			resolvers = append(resolvers, scutilResolver{scoped: scoped})
+			cur = &resolvers[len(resolvers)-1]
+		case cur == nil:
+		default:
+			key, val, ok := strings.Cut(trim, ":")
 			if !ok {
 				continue
 			}
-			ip := strings.TrimSpace(rest)
-			if _, err := netip.ParseAddr(ip); err != nil {
-				continue
+			key, val = strings.TrimSpace(key), strings.TrimSpace(val)
+			switch {
+			case strings.HasPrefix(key, "nameserver["):
+				if ip, err := netip.ParseAddr(val); err == nil {
+					cur.servers = append(cur.servers, net.JoinHostPort(ip.String(), "53"))
+				}
+			case key == "if_index":
+				if _, name, ok := strings.Cut(val, "("); ok {
+					cur.ifName = strings.TrimSuffix(name, ")")
+				}
+			case key == "domain":
+				cur.domain = true
+			case key == "flags":
+				cur.supplemental = strings.Contains(val, "Supplemental")
 			}
-			hp := net.JoinHostPort(ip, "53")
-			if seen[hp] {
-				continue
+		}
+	}
+	return resolvers
+}
+
+func pickScutilDNS(resolvers []scutilResolver, ifName string) []string {
+	if ifName != "" {
+		for _, r := range resolvers {
+			if r.scoped && r.ifName == ifName && len(r.servers) > 0 {
+				return r.servers
 			}
-			seen[hp] = true
-			servers = append(servers, hp)
+		}
+	}
+	var servers []string
+	seen := map[string]bool{}
+	for _, r := range resolvers {
+		if r.scoped || r.supplemental || r.domain {
+			continue
+		}
+		n := strings.ToLower(r.ifName)
+		if strings.HasPrefix(n, "utun") || strings.HasPrefix(n, "wgtun") {
+			continue
+		}
+		for _, hp := range r.servers {
+			if !seen[hp] {
+				seen[hp] = true
+				servers = append(servers, hp)
+			}
 		}
 	}
 	return servers

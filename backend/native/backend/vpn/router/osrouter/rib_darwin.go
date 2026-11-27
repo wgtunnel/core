@@ -13,17 +13,19 @@ import (
 // routeOwners maps each prefix in the kernel routing table to the interface indexes
 // holding a route for exactly it. Unlike `route get`, it sees interface-scoped routes:
 // a LAN that is not the primary network has a scoped connected route, which `route get`
-// skips in favor of the default route.
-func routeOwners() (map[netip.Prefix][]int, error) {
-	owners := map[netip.Prefix][]int{}
+// skips in favor of the default route. Host entries cloned from another route (ARP and
+// path caches) are not routes anyone added, so they are listed apart in cloned.
+func routeOwners() (owners map[netip.Prefix][]int, cloned map[netip.Prefix]bool, err error) {
+	owners = map[netip.Prefix][]int{}
+	cloned = map[netip.Prefix]bool{}
 	for _, af := range []int{unix.AF_INET, unix.AF_INET6} {
 		b, err := route.FetchRIB(af, route.RIBTypeRoute, 0)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		msgs, err := route.ParseRIB(route.RIBTypeRoute, b)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, m := range msgs {
 			rm, ok := m.(*route.RouteMessage)
@@ -39,10 +41,14 @@ func routeOwners() (map[netip.Prefix][]int, error) {
 				n = ribMaskBits(rm.Addrs[unix.RTAX_NETMASK])
 			}
 			p := netip.PrefixFrom(dst, n).Masked()
+			if rm.Flags&unix.RTF_WASCLONED != 0 {
+				cloned[p] = true
+				continue
+			}
 			owners[p] = append(owners[p], rm.Index)
 		}
 	}
-	return owners, nil
+	return owners, cloned, nil
 }
 
 func ribAddr(a route.Addr) (netip.Addr, bool) {

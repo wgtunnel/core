@@ -447,14 +447,10 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 	var b strings.Builder
 	b.WriteString("# wgtunnel kill-switch anchor (ephemeral)\n")
 
-	pass := f.passTable()
-	if len(pass) > 0 {
-		b.WriteString("table <wgtunnel_pass> persist { ")
-		b.WriteString(strings.Join(pass, ", "))
-		b.WriteString(" }\n")
-	} else {
-		b.WriteString("table <wgtunnel_pass> persist\n")
-	}
+	pass := prefixTable(f.localNets)
+	writeTable(&b, "wgtunnel_pass", pass)
+	peers := prefixTable(f.peerPass)
+	writeTable(&b, "wgtunnel_peers", peers)
 
 	// flags any picks up TCP mid-stream. With the default S/SA, a connection
 	// opened while pf was off has no state and gets dropped.
@@ -494,6 +490,13 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 		b.WriteString("pass in quick from <wgtunnel_pass> to any flags any\n")
 		b.WriteString("pass out quick from any to <wgtunnel_pass> flags any\n")
 	}
+	// Peer endpoints are open to the tunnel's own UDP from the daemon only, as on Linux
+	// (fwmark) and Windows (daemon AppID). Anything else to the server goes in the tunnel
+	// or, for a server on the LAN, through the local networks allowed above.
+	if len(peers) > 0 {
+		b.WriteString("pass out quick proto udp from any to <wgtunnel_peers> user root\n")
+		b.WriteString("pass in quick proto udp from <wgtunnel_peers> to any\n")
+	}
 	// Outbound return is quick, so it wins over the drop below it. Inbound does
 	// not match "out" and falls through to the drop.
 	if wantV4 {
@@ -511,7 +514,7 @@ func (f *DarwinFirewall) buildRules(wantV4, wantV6 bool) string {
 func (f *DarwinFirewall) keepLocked() pfKeep {
 	k := pfKeep{tun: f.tunName, listenPort: f.listenPort, vmIfaces: f.vmIfaces}
 	k.pass = append(k.pass, f.localNets...)
-	k.pass = append(k.pass, f.peerPass...)
+	k.peers = append(k.peers, f.peerPass...)
 	if f.tunName != "" {
 		k.tunNets = ifacePrefixes(f.tunName)
 	}
@@ -542,25 +545,27 @@ func ifacePrefixes(name string) []netip.Prefix {
 	return out
 }
 
-func (f *DarwinFirewall) passTable() []string {
+func prefixTable(prefixes []netip.Prefix) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(p netip.Prefix) {
+	for _, p := range prefixes {
 		if !p.IsValid() {
-			return
+			continue
 		}
 		s := p.Masked().String()
 		if seen[s] {
-			return
+			continue
 		}
 		seen[s] = true
 		out = append(out, s)
 	}
-	for _, p := range f.localNets {
-		add(p)
-	}
-	for _, p := range f.peerPass {
-		add(p)
-	}
 	return out
+}
+
+func writeTable(b *strings.Builder, name string, entries []string) {
+	if len(entries) == 0 {
+		fmt.Fprintf(b, "table <%s> persist\n", name)
+		return
+	}
+	fmt.Fprintf(b, "table <%s> persist { %s }\n", name, strings.Join(entries, ", "))
 }

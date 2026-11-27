@@ -128,7 +128,8 @@ func ReadUnderlayDNS(ctx context.Context, ifIndex uint32, ifName string) ([]stri
 		}
 	}
 
-	return nil, nil
+	// ifupdown, dhcpcd and other setups without either keep DNS in resolv.conf only.
+	return linux.UnderlayResolvConfServers(), nil
 }
 
 func ifaceIndex(name string) (int, error) {

@@ -118,7 +118,8 @@ func pickNetstatDefault(out string, ranking []string) (gw, ifName string) {
 		if len(fields) < 4 || fields[0] != "default" {
 			continue
 		}
-		g, netif := fields[1], fields[len(fields)-1]
+		// Destination, Gateway, Flags, Netif, then an optional Expire or "!" column.
+		g, netif := fields[1], fields[3]
 		if isTunnelIface(netif) || strings.HasPrefix(g, "link#") {
 			continue
 		}

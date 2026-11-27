@@ -130,10 +130,17 @@ func (r *windowsRouter) Set(c *router.Config) error {
 		return nil
 	}
 
-	err := r.configureInterface(newC)
-	if err != nil {
-		log.Error(tag, "ConfigureInterface: %v", err)
-		return err
+	// A start that fails after the device closed the adapter tears down without it. The
+	// endpoint routes on the physical adapter and the firewall requirement outlive it and
+	// must still go, or a failed full tunnel start left the machine blocked.
+	teardown := newC.Equal(&router.Config{})
+	if err := r.configureInterface(newC); err != nil {
+		if !teardown {
+			log.Error(tag, "ConfigureInterface: %v", err)
+			return err
+		}
+		log.Debug(tag, "teardown without the adapter: %v", err)
+		r.syncEndpointRoutes(nil, nil)
 	}
 
 	// dns
@@ -145,7 +152,7 @@ func (r *windowsRouter) Set(c *router.Config) error {
 			r.iface, // name, not LUID
 			newC.DNS,
 			newC.SearchDomains,
-		); err != nil {
+		); err != nil && !teardown {
 			return err
 		}
 	}
@@ -268,7 +275,7 @@ func (r *windowsRouter) refreshEndpointRoutes() {
 		r.mu.Unlock()
 		return
 	}
-	moved := r.syncEndpointRoutes(r.prevConfig.PeerEndpoints)
+	moved := r.syncEndpointRoutes(r.prevConfig.PeerEndpoints, r.prevConfig.TunnelAddrs)
 	r.mu.Unlock()
 
 	if moved {
@@ -344,7 +351,7 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 		r.ensurePrivateNetwork()
 	}
 
-	r.syncEndpointRoutes(cfg.PeerEndpoints)
+	r.syncEndpointRoutes(cfg.PeerEndpoints, cfg.TunnelAddrs)
 
 	ipif4, err := r.luid.IPInterface(windows.AF_INET)
 	if err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
@@ -520,7 +527,7 @@ func (r *windowsRouter) configureInterface(cfg *router.Config) error {
 // metric 1 route, so the WireGuard socket stays out of the tunnel's split default
 // routes. It reports whether the physical gateway or adapter changed since the last
 // call while one is still usable.
-func (r *windowsRouter) syncEndpointRoutes(endpoints []netip.Prefix) bool {
+func (r *windowsRouter) syncEndpointRoutes(endpoints, tunnelAddrs []netip.Prefix) bool {
 	prevGateway, prevLUID := r.originalGateway, r.physicalLUID
 	prevGateway6, prevLUID6 := r.originalGateway6, r.physicalLUID6
 
@@ -555,7 +562,7 @@ func (r *windowsRouter) syncEndpointRoutes(endpoints []netip.Prefix) bool {
 	// that closing the tunnel cleans all of them up.
 	wantedEndpoints := make(map[netip.Prefix]bool, len(endpoints))
 	for _, prefix := range endpoints {
-		if !prefix.IsValid() || prefix.Addr().IsPrivate() || prefix.Addr().IsLinkLocalUnicast() {
+		if !endpointNeedsProtection(prefix, tunnelAddrs) {
 			continue
 		}
 		wantedEndpoints[prefix] = true

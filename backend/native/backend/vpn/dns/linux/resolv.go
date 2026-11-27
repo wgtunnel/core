@@ -87,3 +87,35 @@ func ResolvConfBackupExists() bool {
 	_, err := os.Stat(ResolvConfBak)
 	return err == nil
 }
+
+// UnderlayResolvConfServers reads the network's own nameservers from resolv.conf, for systems
+// where neither systemd-resolved nor NetworkManager manages DNS. While a tunnel's DNS is
+// written there, the original is in the backup. Loopback stubs are left out as their upstream
+// queries would follow the tunnel's routes, not the bypass.
+func UnderlayResolvConfServers() []string {
+	path := ResolvConfPath
+	if ResolvConfBackupExists() {
+		path = ResolvConfBak
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return parseNameservers(string(data))
+}
+
+func parseNameservers(conf string) []string {
+	var out []string
+	for _, line := range strings.Split(conf, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		addr, err := netip.ParseAddr(fields[1])
+		if err != nil || addr.IsLoopback() || addr.IsUnspecified() {
+			continue
+		}
+		out = append(out, netip.AddrPortFrom(addr, 53).String())
+	}
+	return out
+}

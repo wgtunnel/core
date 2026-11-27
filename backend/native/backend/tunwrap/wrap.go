@@ -17,9 +17,10 @@ import (
 // DialContextFunc dials through the tunnel stack (netstack) or the OS.
 type DialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-// MaybeWrapTUN wraps with OS-dialed upstreams bound to the tunnel network
-func MaybeWrapTUN(base tun.Device, dnsConfigJSON string) (tun.Device, error) {
-	return MaybeWrapTUNDial(base, dnsConfigJSON, bypass.TunnelDialer().DialContext)
+// MaybeWrapTUN wraps with OS-dialed upstreams bound to the tunnel network when routes
+// (the tunnel's AllowedIPs) cover them, see bypass.TunnelDialer.
+func MaybeWrapTUN(base tun.Device, dnsConfigJSON string, routes []netip.Prefix) (tun.Device, error) {
+	return MaybeWrapTUNDial(base, dnsConfigJSON, bypass.TunnelDialer(routes).DialContext)
 }
 
 // MaybeWrapTUNDial is MaybeWrapTUN with an optional tunnel dialer so FakeDNS

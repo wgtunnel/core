@@ -344,7 +344,9 @@ func parseToRouterConfig(conf *wireproxyawg.Configuration, listenPort uint16) (*
 			log.Debug(tag, "Skipping peer endpoint %q: %v", *peer.Endpoint, err)
 			continue
 		}
-		if epPrefix.IsValid() && epPrefix.Addr().IsGlobalUnicast() && !epPrefix.Addr().IsPrivate() {
+		// Private endpoints too as one behind the gateway on another LAN loops into the
+		// tunnel without a route, and the router leaves out one on a connected subnet.
+		if epPrefix.IsValid() && epPrefix.Addr().IsGlobalUnicast() {
 			cfg.PeerEndpoints = append(cfg.PeerEndpoints, epPrefix)
 		}
 	}

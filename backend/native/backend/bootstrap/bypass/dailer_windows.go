@@ -7,7 +7,9 @@ import (
 	"net"
 	"unsafe"
 
+	"github.com/wgtunnel/backend/network"
 	"golang.org/x/sys/windows"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 const (
@@ -23,25 +25,46 @@ func BypassSocket(fd uintptr) error {
 }
 
 func bindToInterface(fd uintptr, ifIndex uint32) error {
-	if ifIndex == 0 {
-		return nil
-	}
+	return bindFamilies(fd, ifIndex, ifIndex)
+}
+
+// bindFamilies sends through the given adapter for each family. Zero leaves that
+// family to the routing table.
+func bindFamilies(fd uintptr, v4Index, v6Index uint32) error {
 	handle := windows.Handle(fd)
-	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], ifIndex)
-	v4 := int(*(*uint32)(unsafe.Pointer(&b[0])))
-	_ = windows.SetsockoptInt(handle, windows.IPPROTO_IP, IP_UNICAST_IF, v4)
-	_ = windows.SetsockoptInt(handle, windows.IPPROTO_IPV6, IPV6_UNICAST_IF, int(ifIndex))
+	if v4Index != 0 {
+		// IP_UNICAST_IF takes the index in network byte order, IPV6_UNICAST_IF in host order.
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], v4Index)
+		_ = windows.SetsockoptInt(handle, windows.IPPROTO_IP, IP_UNICAST_IF, int(*(*uint32)(unsafe.Pointer(&b[0]))))
+	}
+	if v6Index != 0 {
+		_ = windows.SetsockoptInt(handle, windows.IPPROTO_IPV6, IPV6_UNICAST_IF, int(v6Index))
+	}
 	return nil
 }
 
-// Dialer is a biased socket only
+// Dialer binds to the physical adapter. The tunnel's routes are already in place while
+// peers are resolved, so an unbound socket followed them into the tunnel and timed out
+// from the tunnel address.
 func Dialer(useBypass bool, ifIndex uint32) *net.Dialer {
-	_ = ifIndex
 	if !useBypass {
 		return &net.Dialer{}
 	}
-	return NewBypassDialer(BypassSocket)
+	return NewBypassDialer(func(fd uintptr) error {
+		if ifIndex != 0 {
+			return bindToInterface(fd, ifIndex)
+		}
+		return bindFamilies(fd, physicalIfIndex(windows.AF_INET), physicalIfIndex(windows.AF_INET6))
+	})
+}
+
+func physicalIfIndex(family winipcfg.AddressFamily) uint32 {
+	route, ok, err := network.PhysicalDefaultRoute(family)
+	if err != nil || !ok {
+		return 0
+	}
+	return route.IfIndex
 }
 
 // NetworkDialer binds local DNS to the underlay adapter

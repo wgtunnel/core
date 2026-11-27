@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"net"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -57,17 +58,23 @@ func startVpnDevice(
 
 	log.Debug(tag, "DNS config passed: %s", dnsConfigJSON)
 
-	tun, err := tunwrap.MaybeWrapTUN(baseTun, dnsConfigJSON)
-	if err != nil {
-		// MaybeWrapTUN should close rawTUN on failure
-		log.Error(tag, "DNS wrap: %v", err)
-		return -1
-	}
-
 	conf, err := wireproxyawg.ParseConfigString(settings)
 	if err != nil {
 		log.Error(tag, "Invalid config file: %v", err)
-		tun.Close()
+		baseTun.Close()
+		return -1
+	}
+	var routes []netip.Prefix
+	if conf.Device != nil {
+		for _, peer := range conf.Device.Peers {
+			routes = append(routes, peer.AllowedIPs...)
+		}
+	}
+
+	tun, err := tunwrap.MaybeWrapTUN(baseTun, dnsConfigJSON, routes)
+	if err != nil {
+		// MaybeWrapTUN should close rawTUN on failure
+		log.Error(tag, "DNS wrap: %v", err)
 		return -1
 	}
 
