@@ -92,7 +92,7 @@ internal class EndpointResolver(
                 val host = endpoint?.substringBeforeLast(":") ?: continue
                 val result =
                     try {
-                        resolver.resolve(host)
+                        resolver.resolve(host).withoutNat64Synthesized()
                     } catch (t: Exception) {
                         log.w(t) { "Peer resolve threw for ${shortKey(publicKey)}" }
                         log.d { "Peer resolve host=$host" }
@@ -120,7 +120,7 @@ internal class EndpointResolver(
                 if (host != null) {
                     val result =
                         try {
-                            resolver.resolve(host)
+                            resolver.resolve(host).withoutNat64Synthesized()
                         } catch (t: Exception) {
                             log.w(t) { "Tunnel DNS resolve threw" }
                             log.d { "Tunnel DNS resolve host=$host" }

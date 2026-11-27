@@ -112,6 +112,20 @@ object DnsHostUtils {
         return ipv4 to port
     }
 
+    /**
+     * Whether an AAAA answer was synthesized by DNS64 from an A record (in the well-known
+     * 64:ff9b::/96 (RFC 6052) or the local-use 64:ff9b:1::/48 (RFC 8215)).
+     */
+    fun isNat64Synthesized(raw: String): Boolean {
+        val clean = raw.removePrefix("[").removeSuffix("]")
+        val bytes = (IPAddressString(clean).address as? IPv6Address)?.bytes ?: return false
+        if (bytes.size != 16) return false
+        if (bytes[0] != 0x00.toByte() || bytes[1] != 0x64.toByte()) return false
+        if (bytes[2] != 0xff.toByte() || bytes[3] != 0x9b.toByte()) return false
+        val localUse = bytes[4] == 0.toByte() && bytes[5] == 1.toByte()
+        return localUse || (4..11).all { bytes[it] == 0.toByte() }
+    }
+
     fun ensurePort53(ip: String): String = ensureDnsPort(ip, 53)
 
     fun ensureDnsPort(ip: String, defaultPort: Int): String {

@@ -2,6 +2,7 @@ package com.wgtunnel.backend.model.dns
 
 import com.wgtunnel.backend.enums.FamilyOverride
 import com.wgtunnel.backend.enums.Ipv6Support
+import com.wgtunnel.backend.util.DnsHostUtils
 
 data class DnsBootstrapResult(
     val ipv4: List<String> = emptyList(),
@@ -69,6 +70,17 @@ data class DnsBootstrapResult(
             }
         val mergedV6 = ipv6.ifEmpty { previous.ipv6 }
         return DnsBootstrapResult(ipv4 = mergedV4, ipv6 = mergedV6)
+    }
+
+    /**
+     * Drops AAAA answers a DNS64 resolver synthesized from the A records. They reach the server's
+     * IPv4 address through NAT64, so they must not win over the A record when IPv6 is preferred as
+     * NAT64 often cannot hairpin to a server behind the same router.
+     */
+    fun withoutNat64Synthesized(): DnsBootstrapResult {
+        if (ipv4.isEmpty()) return this
+        val real = ipv6.filterNot(DnsHostUtils::isNat64Synthesized)
+        return if (real.size == ipv6.size) this else copy(ipv6 = real)
     }
 
     private fun bracketed(host: String): String =
