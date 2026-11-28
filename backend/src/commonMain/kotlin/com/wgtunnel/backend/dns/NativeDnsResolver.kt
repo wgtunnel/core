@@ -2,6 +2,7 @@ package com.wgtunnel.backend.dns
 
 import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
+import com.wgtunnel.backend.util.UrlParse
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -35,7 +36,7 @@ object NativeDnsResolver {
                     log.i { "Native DNS resolve protocol=$protocol bypass=$bypass" }
                     log.d {
                         "Native resolve host=$host protocol=$protocol bypass=$bypass " +
-                            "upstream=${resolvedUpstream.ifBlank { originalUpstream.ifBlank { "(local)" } }} " +
+                            "upstream=${UrlParse.redactCredentials(resolvedUpstream.ifBlank { originalUpstream.ifBlank { "(local)" } })} " +
                             "→ v4=${result.ipv4} v6=${result.ipv6}"
                     }
                 }

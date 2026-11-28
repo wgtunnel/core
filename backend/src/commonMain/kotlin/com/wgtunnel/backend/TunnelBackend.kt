@@ -28,6 +28,7 @@ import com.wgtunnel.backend.system.NetworkMonitor
 import com.wgtunnel.backend.system.PowerManager
 import com.wgtunnel.backend.system.ipv6Support
 import com.wgtunnel.backend.util.PublicKey
+import com.wgtunnel.backend.util.UrlParse
 import com.wgtunnel.backend.util.freshBounceFamily
 import com.wgtunnel.backend.util.hasDynamicEndpoints
 import com.wgtunnel.backend.util.hasIpv6Peers
@@ -797,7 +798,7 @@ class TunnelBackend(
     override suspend fun setBootstrapDnsMode(mode: DnsBoostrapMode) {
         _status.update { it.copy(dnsMode = mode) }
         log.i { "DNS Bootstrap mode set to: ${mode::class.simpleName}" }
-        log.d { "DNS Bootstrap mode detail: $mode" }
+        log.d { "DNS Bootstrap mode detail: ${UrlParse.redactCredentials(mode.toString())}" }
     }
 
     override suspend fun stopAllActiveTunnels() = tunnelMutex.withLock {

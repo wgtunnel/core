@@ -17,6 +17,7 @@ import (
 	wireproxyawg "github.com/artem-russkikh/wireproxy-awg"
 	"github.com/wgtunnel/backend/bootstrap/bypass"
 	"github.com/wgtunnel/backend/constants"
+	"github.com/wgtunnel/backend/dns/transport"
 	hand "github.com/wgtunnel/backend/handle"
 	"github.com/wgtunnel/backend/hop"
 	"github.com/wgtunnel/backend/ipc"
@@ -56,7 +57,7 @@ func startVpnDevice(
 		return -1
 	}
 
-	log.Debug(tag, "DNS config passed: %s", dnsConfigJSON)
+	log.Debug(tag, "DNS config passed: %s", transport.RedactCredentials(dnsConfigJSON))
 
 	conf, err := wireproxyawg.ParseConfigString(settings)
 	if err != nil {

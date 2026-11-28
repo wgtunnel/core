@@ -1,6 +1,23 @@
 package com.wgtunnel.backend.util
 
 internal object UrlParse {
+    private val credentials = Regex("""://([^/?#@\s"',]*?):([^/?#@\s"',]*)@""")
+
+    /** Masks the password of every user:password@ URL in [text] */
+    fun redactCredentials(text: String): String = credentials.replace(text, "://$1:***@")
+
+    /** user[:password] of an http(s) URL, or null */
+    fun userInfo(url: String): String? {
+        val s = url.trim()
+        val schemeEnd = s.indexOf("://")
+        if (schemeEnd < 0) return null
+        val rest = s.substring(schemeEnd + 3)
+        val end =
+            rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it }
+        val at = rest.substring(0, end).lastIndexOf('@')
+        return if (at > 0) rest.substring(0, at) else null
+    }
+
     /** host from http(s) URL or null */
     fun host(url: String): String? {
         val s = url.trim()

@@ -36,14 +36,16 @@ object DnsHostUtils {
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
             return try {
                 val uri = URI(trimmed)
-                val newAuthority =
-                    if (uri.port != -1) {
-                        "$replacementIp:${uri.port}"
-                    } else {
-                        replacementIp
-                    }
-
-                URI(uri.scheme, newAuthority, uri.path, uri.query, uri.fragment).toString()
+                // Raw parts so user:password@ (DoH auth) and percent encoding survive
+                buildString {
+                    append(uri.scheme).append("://")
+                    uri.rawUserInfo?.let { append(it).append('@') }
+                    append(replacementIp)
+                    if (uri.port != -1) append(':').append(uri.port)
+                    uri.rawPath?.let(::append)
+                    uri.rawQuery?.let { append('?').append(it) }
+                    uri.rawFragment?.let { append('#').append(it) }
+                }
             } catch (_: Exception) {
                 // just return the IP if URL parsing fails
                 replacementIp

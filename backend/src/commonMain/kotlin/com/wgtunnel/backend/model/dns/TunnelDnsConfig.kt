@@ -36,12 +36,16 @@ data class TunnelDnsConfig(
             resolveHost() ?: throw BackendException.ConfigMissingDNS("Host missing from upstream")
         val port = portFromUpstreamOrDefault()
         val path = dohPathFromUpstream()
+        // DoH auth credentials, and a non-default port, carry over to the resolved URLs
+        val dohUserInfo =
+            upstream.firstOrNull()?.let { UrlParse.userInfo(it) }?.let { "$it@" }.orEmpty()
+        val dohPort = if (port != 443) ":$port" else ""
         val out = ArrayList<String>()
 
         for (ip in ips.ipv4) {
             out +=
                 when (defaultTransport) {
-                    "doh" -> "https://$ip$path"
+                    "doh" -> "https://$dohUserInfo$ip$dohPort$path"
                     else -> "$ip:$port"
                 }
         }
@@ -50,7 +54,7 @@ data class TunnelDnsConfig(
                 val ip = raw.removePrefix("[").removeSuffix("]")
                 out +=
                     when (defaultTransport) {
-                        "doh" -> "https://[$ip]$path"
+                        "doh" -> "https://$dohUserInfo[$ip]$dohPort$path"
                         else -> "[$ip]:$port"
                     }
             }

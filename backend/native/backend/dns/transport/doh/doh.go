@@ -93,7 +93,7 @@ func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(wire))
 	if err != nil {
-		return nil, fmt.Errorf("doh: request %s: %w", rawURL, err)
+		return nil, fmt.Errorf("doh: request %s: %w", transport.RedactCredentials(rawURL), err)
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
@@ -103,22 +103,22 @@ func (t *Transport) exchangeOne(ctx context.Context, wire []byte, rawURL string)
 
 	resp, err := t.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("doh: do %s: %w", rawURL, err)
+		return nil, fmt.Errorf("doh: do %s: %w", transport.RedactCredentials(rawURL), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("doh: status %d from %s", resp.StatusCode, rawURL)
+		return nil, fmt.Errorf("doh: status %d from %s", resp.StatusCode, transport.RedactCredentials(rawURL))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if err != nil {
-		return nil, fmt.Errorf("doh: read %s: %w", rawURL, err)
+		return nil, fmt.Errorf("doh: read %s: %w", transport.RedactCredentials(rawURL), err)
 	}
 
 	out := new(dns.Msg)
 	if err := out.Unpack(body); err != nil {
-		return nil, fmt.Errorf("doh: unpack %s: %w", rawURL, err)
+		return nil, fmt.Errorf("doh: unpack %s: %w", transport.RedactCredentials(rawURL), err)
 	}
 	return out, nil
 }

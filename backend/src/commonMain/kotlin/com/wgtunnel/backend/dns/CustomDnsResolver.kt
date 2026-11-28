@@ -4,6 +4,7 @@ import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.model.dns.DnsBoostrapConfig
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.util.DnsHostUtils
+import com.wgtunnel.backend.util.UrlParse
 import java.util.concurrent.ConcurrentHashMap
 
 /** Upstream resolved by system, then native DoH/DoT/plain via native. */
@@ -38,12 +39,12 @@ class CustomDnsResolver(
                     } else {
                         lastUpstreamIps[hostToResolve]?.also {
                             log.w { "Custom DNS upstream host did not resolve, using last known IPs" }
-                            log.d { "Using last known IPs for $upstream: $it" }
+                            log.d { "Using last known IPs for ${UrlParse.redactCredentials(upstream)}: $it" }
                         }
                     }
                 if (ips.isNullOrEmpty()) {
                     log.w { "Failed to resolve custom DNS upstream host" }
-                    log.d { "Failed to resolve custom DNS upstream host: $upstream" }
+                    log.d { "Failed to resolve custom DNS upstream host: ${UrlParse.redactCredentials(upstream)}" }
                     return DnsBootstrapResult()
                 }
                 // The configured host stays the TLS name, so the cached IPs are still verified
@@ -55,7 +56,7 @@ class CustomDnsResolver(
         log.i { "Custom DNS resolve protocol=${dnsConfig.protocol} bypass=$bypass" }
         log.d {
             "Custom DNS protocol=${dnsConfig.protocol} host=$host " +
-                "upstreams=$resolvedUpstreams bypass=$bypass"
+                "upstreams=${UrlParse.redactCredentials(resolvedUpstreams.toString())} bypass=$bypass"
         }
 
         return try {
@@ -68,7 +69,10 @@ class CustomDnsResolver(
             )
         } catch (e: Exception) {
             log.w(e) { "Custom DNS resolution failed protocol=${dnsConfig.protocol}" }
-            log.d { "Custom DNS resolution failed host=$host upstreams=$resolvedUpstreams" }
+            log.d {
+                "Custom DNS resolution failed host=$host " +
+                    "upstreams=${UrlParse.redactCredentials(resolvedUpstreams.toString())}"
+            }
             DnsBootstrapResult()
         }
     }

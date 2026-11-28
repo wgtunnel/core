@@ -23,7 +23,7 @@ const tag = "Bootstrap"
 // Resolve runs a one-shot Ipv4 and IPv6 lookup using options
 func Resolve(ctx context.Context, host string, opts Options) (v4, v6 []netip.Addr, err error) {
 	opts = opts.withDefaults()
-	log.Debug(tag, "lookup host=%s protocol=%s upstream=%s", host, opts.Protocol, opts.ResolvedUpstream)
+	log.Debug(tag, "lookup host=%s protocol=%s upstream=%s", host, opts.Protocol, transport.RedactCredentials(opts.ResolvedUpstream))
 
 	tr, err := newTransport(opts)
 	if err != nil {

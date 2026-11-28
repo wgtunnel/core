@@ -9,6 +9,7 @@ import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.model.dns.TunnelDnsConfig
 import com.wgtunnel.backend.system.NetworkMonitor
 import com.wgtunnel.backend.util.PublicKey
+import com.wgtunnel.backend.util.UrlParse
 import com.wgtunnel.parser.Config
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.coroutineScope
@@ -180,7 +181,8 @@ internal class EndpointResolver(
         when (mode) {
             is DnsBoostrapMode.System -> "system/local underlay"
             is DnsBoostrapMode.Custom ->
-                "custom protocol=${mode.config.protocol} upstream=${mode.config.upstream}"
+                "custom protocol=${mode.config.protocol} " +
+                    "upstream=${mode.config.upstream?.let(UrlParse::redactCredentials)}"
         }
 
     private fun shortKey(key: PublicKey): String =
