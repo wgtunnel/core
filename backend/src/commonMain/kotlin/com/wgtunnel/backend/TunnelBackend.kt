@@ -959,6 +959,7 @@ class TunnelBackend(
                                                     active.lastBootstrapResolution?.peerKeyResults,
                                                 networkIpv6 = network.ipv6Support(),
                                                 activeNetworkKey = network.key,
+                                                networkValidated = network.isValidated,
                                                 deviceAwake = power.awake,
                                                 wakeEpoch = power.wakeCount,
                                                 recovery = liveRecoveryFeature(active, mode),

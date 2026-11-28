@@ -7,6 +7,8 @@ expect class NetworkSnapshot {
     /** Null when the monitor could not read the network's link properties. */
     val hasIpv6: Boolean?
     val isUsable: Boolean
+    /** Whether the platform verified internet on the network. Always true where it can't tell. */
+    val isValidated: Boolean
 
     fun hasNetwork(): Boolean
 }

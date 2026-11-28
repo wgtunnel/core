@@ -38,13 +38,19 @@ class CustomDnsResolver(
                         freshIps
                     } else {
                         lastUpstreamIps[hostToResolve]?.also {
-                            log.w { "Custom DNS upstream host did not resolve, using last known IPs" }
-                            log.d { "Using last known IPs for ${UrlParse.redactCredentials(upstream)}: $it" }
+                            log.w {
+                                "Custom DNS upstream host did not resolve, using last known IPs"
+                            }
+                            log.d {
+                                "Using last known IPs for ${UrlParse.redactCredentials(upstream)}: $it"
+                            }
                         }
                     }
                 if (ips.isNullOrEmpty()) {
                     log.w { "Failed to resolve custom DNS upstream host" }
-                    log.d { "Failed to resolve custom DNS upstream host: ${UrlParse.redactCredentials(upstream)}" }
+                    log.d {
+                        "Failed to resolve custom DNS upstream host: ${UrlParse.redactCredentials(upstream)}"
+                    }
                     return DnsBootstrapResult()
                 }
                 // The configured host stays the TLS name, so the cached IPs are still verified

@@ -22,6 +22,7 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -88,6 +89,8 @@ internal class TunnelRecovery(
         val lastResolvedPeers: Map<PublicKey, DnsBootstrapResult>?,
         val networkIpv6: Ipv6Support,
         val activeNetworkKey: String?,
+        // Whether the platform verified internet on the active network
+        val networkValidated: Boolean = true,
         val deviceAwake: Boolean,
         // Goes up on every wake signal, screen on, unlock, leaving Doze, resume from sleep
         val wakeEpoch: Long = 0L,
@@ -114,6 +117,7 @@ internal class TunnelRecovery(
             val lastSignal = AtomicReference<TimeMark?>(null)
             var lastWake: Long? = null
             var lastKey: String? = null
+            var lastValidated = true
 
             val snapshots =
                 host
@@ -125,9 +129,18 @@ internal class TunnelRecovery(
                             previousWake != null &&
                                 snap.activeNetworkKey != null &&
                                 snap.activeNetworkKey != lastKey
+                        // Internet back on the same network, like cellular coming back into
+                        // coverage without the data connection having dropped
+                        val regained =
+                            previousWake != null &&
+                                !moved &&
+                                snap.activeNetworkKey != null &&
+                                !lastValidated &&
+                                snap.networkValidated
                         lastWake = snap.wakeEpoch
                         snap.activeNetworkKey?.let { lastKey = it }
-                        if (woke || moved) {
+                        lastValidated = snap.networkValidated
+                        if (woke || moved || regained) {
                             lastSignal.store(TimeSource.Monotonic.markNow())
                             signals.fetchAndAdd(1)
                         }
@@ -315,16 +328,37 @@ internal class TunnelRecovery(
                 }
 
                 if (seamlessRecoveryAttempted >= MAX_SEAMLESS_RECOVERY_RETRIES) {
-                    // Out of attempts, the user needs to step in. Only a real change (wake,
-                    // unlock, new network) is a reason to try again, or the episode ending.
+                    // Out of quick attempts. A wake, unlock, network change or internet coming
+                    // back retries right away. Otherwise retry slowly, as the network can recover
+                    // without any of those, like cellular coming back into coverage.
                     if (!exhausted) {
                         exhausted = true
                         log.i {
-                            "Recovery: used $MAX_SEAMLESS_RECOVERY_RETRIES bounce attempts for tunnel $tunnelId, waiting for the device to wake or the network to change"
+                            "Recovery: used $MAX_SEAMLESS_RECOVERY_RETRIES bounce attempts for tunnel $tunnelId, retrying every ${EXHAUSTED_RETRY_INTERVAL.inWholeMinutes} min or on a wake or network change"
                         }
                     }
-                    snapshots.first { !it.shouldKeepFailureRecoveryEpisode || changedSince() }
-                    return LoopStep.CONTINUE_EPISODE
+                    val signalled =
+                        withTimeoutOrNull(EXHAUSTED_RETRY_INTERVAL) {
+                            snapshots.first {
+                                !it.shouldKeepFailureRecoveryEpisode || changedSince()
+                            }
+                        }
+                    if (signalled != null) return LoopStep.CONTINUE_EPISODE
+
+                    val ready = snapshots.value
+                    if (!ready.shouldKeepFailureRecoveryEpisode) return LoopStep.BREAK_EPISODE
+                    if (
+                        ready.bootstrapPending ||
+                            !ready.recovery.seamlessRecovery ||
+                            !ready.deviceAwake
+                    ) {
+                        return LoopStep.CONTINUE_EPISODE
+                    }
+                    log.i { "Recovery: tunnel $tunnelId still failing, retrying" }
+                    if (tryFullTunnelBounce(ready.recovery.dynamicDnsRecovery)) {
+                        lastBounce = TimeSource.Monotonic.markNow()
+                    }
+                    return LoopStep.PROCEED
                 }
 
                 val configured = beforeBounce.recovery.bounceDelaySeconds.seconds
@@ -780,6 +814,9 @@ internal class TunnelRecovery(
 
         /** How long a wake or network change still counts as recent */
         val FRESH_SIGNAL_WINDOW = 60.seconds
+
+        /** Retry interval once the quick bounce attempts are used up */
+        val EXHAUSTED_RETRY_INTERVAL = 5.minutes
 
         val IDLE_RECOVERY =
             Tunnel.Feature.Recovery(seamlessRecovery = false, dynamicDnsRecovery = false)

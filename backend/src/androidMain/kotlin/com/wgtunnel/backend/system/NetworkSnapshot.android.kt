@@ -7,6 +7,7 @@ actual data class NetworkSnapshot(
     actual val hasIpv6: Boolean?,
     actual val isUsable: Boolean,
     val network: Network?,
+    actual val isValidated: Boolean = true,
 ) {
     actual fun hasNetwork(): Boolean {
         return network != null
