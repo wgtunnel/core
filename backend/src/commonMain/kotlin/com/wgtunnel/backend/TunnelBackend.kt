@@ -71,6 +71,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
+// A fresh peer resolve, room for the custom DNS upstream lookup (5s) plus the query and a retry
+private val FRESH_RESOLVE_TIMEOUT = 15.seconds
+
 class TunnelBackend(
     private val scope: CoroutineScope,
     override val applicationProvider: ApplicationProvider,
@@ -466,7 +469,7 @@ class TunnelBackend(
     ): Boolean {
         val bootstrapResult =
             try {
-                withTimeout(10.seconds) {
+                withTimeout(FRESH_RESOLVE_TIMEOUT) {
                     // reuse the cached resolve tunnelDnsConfig
                     endpointResolver.resolve(
                         mode,
@@ -972,7 +975,7 @@ class TunnelBackend(
                                         _status.value.activeTunnels[tunnel.id] ?: return null
                                     val runtimeTunnelDnsConfig = active.getRuntimeTunnelDnsConfig()
                                     return try {
-                                        withTimeout(10.seconds) {
+                                        withTimeout(FRESH_RESOLVE_TIMEOUT) {
                                             endpointResolver.resolve(
                                                 mode,
                                                 runtimeTunnelDnsConfig,

@@ -4,6 +4,7 @@ import co.touchlab.kermit.Logger
 import com.wgtunnel.backend.model.dns.DnsBoostrapConfig
 import com.wgtunnel.backend.model.dns.DnsBootstrapResult
 import com.wgtunnel.backend.util.DnsHostUtils
+import java.util.concurrent.ConcurrentHashMap
 
 /** Upstream resolved by system, then native DoH/DoT/plain via native. */
 class CustomDnsResolver(
@@ -26,15 +27,26 @@ class CustomDnsResolver(
                 log.d { "Upstream DNS needs resolution, resolving via system resolver" }
                 val hostToResolve = DnsHostUtils.extractHost(upstream)
                 val resolutionResult = systemDns.resolve(hostToResolve)
-                val ips = buildList {
+                val freshIps = buildList {
                     addAll(resolutionResult.ipv4)
                     addAll(resolutionResult.ipv6.map { it.removeSurrounding("[", "]") })
                 }
-                if (ips.isEmpty()) {
+                val ips =
+                    if (freshIps.isNotEmpty()) {
+                        lastUpstreamIps[hostToResolve] = freshIps
+                        freshIps
+                    } else {
+                        lastUpstreamIps[hostToResolve]?.also {
+                            log.w { "Custom DNS upstream host did not resolve, using last known IPs" }
+                            log.d { "Using last known IPs for $upstream: $it" }
+                        }
+                    }
+                if (ips.isNullOrEmpty()) {
                     log.w { "Failed to resolve custom DNS upstream host" }
                     log.d { "Failed to resolve custom DNS upstream host: $upstream" }
                     return DnsBootstrapResult()
                 }
+                // The configured host stays the TLS name, so the cached IPs are still verified
                 ips.map { DnsHostUtils.replaceHostWithIP(upstream, it) }
             } else {
                 listOf(upstream)
@@ -59,5 +71,9 @@ class CustomDnsResolver(
             log.d { "Custom DNS resolution failed host=$host upstreams=$resolvedUpstreams" }
             DnsBootstrapResult()
         }
+    }
+
+    companion object {
+        private val lastUpstreamIps = ConcurrentHashMap<String, List<String>>()
     }
 }
