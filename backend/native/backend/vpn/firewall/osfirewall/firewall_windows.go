@@ -57,6 +57,7 @@ type WindowsFirewall struct {
 
 	tunRules        []*wf.Rule
 	localAddrRules  []*wf.Rule
+	localNets       []netip.Prefix // allowed local networks, applied whenever blocking
 	permittedRoutes map[netip.Prefix][]*wf.Rule
 
 	// rules an earlier process left in our sublayer, until taken over or removed
@@ -173,15 +174,27 @@ func New() (firewall.Firewall, error) {
 func (f *WindowsFirewall) AllowLocalNetworks(addrs []netip.Prefix) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// cleanup old local addr rules
-	f.RemoveLocalNetworks()
+	f.localNets = append([]netip.Prefix(nil), addrs...)
+	f.removeLocalAddrRules()
+	if !f.IsEnabled() {
+		// Applied by reconcile once blocking starts
+		return nil
+	}
+	return f.applyLocalNets()
+}
 
-	// add new rules
-	addedByPrefix, err := f.addPermissiveRulesForPrefixes(addrs, "bypass for local addr ")
+// applyLocalNets adds the permit rules for localNets. Caller holds f.mu.
+func (f *WindowsFirewall) applyLocalNets() error {
+	if len(f.localNets) == 0 || f.localAddrRules != nil {
+		return nil
+	}
+	if err := f.ensureSession(); err != nil {
+		return fmt.Errorf("ensure WFP session: %w", err)
+	}
+	addedByPrefix, err := f.addPermissiveRulesForPrefixes(f.localNets, "bypass for local addr ")
 	if err != nil {
 		return err
 	}
-	f.localAddrRules = nil
 	for _, rules := range addedByPrefix {
 		f.localAddrRules = append(f.localAddrRules, rules...)
 	}
@@ -189,17 +202,25 @@ func (f *WindowsFirewall) AllowLocalNetworks(addrs []netip.Prefix) error {
 	return nil
 }
 
-func (f *WindowsFirewall) RemoveLocalNetworks() error {
+func (f *WindowsFirewall) removeLocalAddrRules() {
 	if err := f.removeRules(f.localAddrRules); err != nil {
 		log.Error(tag, "Failed to remove old local addr rules: %v", err)
 	}
 	f.localAddrRules = nil
+}
 
+func (f *WindowsFirewall) RemoveLocalNetworks() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.localNets = nil
+	f.removeLocalAddrRules()
 	return nil
 }
 
 func (f *WindowsFirewall) IsAllowLocalNetworksEnabled() bool {
-	return f.localAddrRules != nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.localNets) > 0
 }
 
 func (f *WindowsFirewall) UpdatePermittedRoutes(newRoutes []netip.Prefix) error {
@@ -343,6 +364,10 @@ func (f *WindowsFirewall) reconcile() error {
 		}
 		f.blockRulesV6 = nil
 		f.blockedV6.Store(false)
+	}
+
+	if err := f.applyLocalNets(); err != nil {
+		return fmt.Errorf("allow local networks: %w", err)
 	}
 
 	// This process's rules are in place now, so the earlier ones can go without a gap.

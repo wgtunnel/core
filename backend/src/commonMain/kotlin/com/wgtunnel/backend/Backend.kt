@@ -27,6 +27,13 @@ interface Backend {
 
     suspend fun disableKillSwitch(): Result<Unit>
 
+    /**
+     * Local networks reachable outside the tunnel whenever the desktop firewall blocks, for the
+     * kill switch or a full tunnel. Empty blocks them. No effect on Android, where LAN access is
+     * part of [KillSwitchConfig].
+     */
+    suspend fun setAllowedLocalNetworks(networks: Set<String>): Result<Unit>
+
     suspend fun setBootstrapDnsMode(mode: DnsBoostrapMode)
 
     suspend fun stopAllActiveTunnels(): Result<Unit>

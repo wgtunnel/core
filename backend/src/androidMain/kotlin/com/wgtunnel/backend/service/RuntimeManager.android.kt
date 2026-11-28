@@ -153,6 +153,9 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
         }
     }
 
+    // Android lockdown takes its LAN networks from KillSwitchConfig
+    actual suspend fun setAllowedLocalNetworks(networks: Set<String>) = Unit
+
     actual suspend fun setKillSwitch(config: KillSwitchConfig?) {
         if (config == null) {
             val service = _vpnService.value ?: return

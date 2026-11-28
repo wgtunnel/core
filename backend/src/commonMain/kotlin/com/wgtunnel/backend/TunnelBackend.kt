@@ -763,6 +763,10 @@ class TunnelBackend(
         }
     }
 
+    override suspend fun setAllowedLocalNetworks(networks: Set<String>) = runCatching {
+        runtimeManager.setAllowedLocalNetworks(networks)
+    }
+
     override suspend fun setKillSwitch(config: KillSwitchConfig) = runCatching {
         runtimeManager.setKillSwitch(config)
         _status.update { current ->

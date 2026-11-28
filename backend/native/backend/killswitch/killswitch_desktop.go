@@ -140,6 +140,8 @@ func getKillSwitchStatus() C.int {
 }
 
 // cidrsCSV: comma-separated prefixes ("192.168.0.0/16,10.0.0.0/8"). Empty clears bypasses.
+// The setting stands on its own: the firewall applies it whenever it blocks, whether for the
+// kill switch or a full tunnel, so it can be set while the firewall is off.
 // A Go string matches the C side's struct go_string. A *C.char only worked where the
 // struct is passed in registers, and read the struct itself as text on Windows x64.
 //
@@ -148,10 +150,6 @@ func setKillSwitchAllowedNetworks(cidrsCSV string) C.int {
 	fw, err := firewallmgr.Get()
 	if err != nil {
 		log.Error(tag, "Failed to get firewall: %v", err)
-		return -1
-	}
-	if !fw.IsEnabled() {
-		log.Error(tag, "Firewall is not active")
 		return -1
 	}
 

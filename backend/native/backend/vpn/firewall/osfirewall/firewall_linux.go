@@ -79,6 +79,7 @@ type LinuxFirewall struct {
 	blockedV6 atomic.Bool
 
 	localAddrRules []*nftables.Rule            // For tracking AllowedLocalNetworks rules
+	localNets      []netip.Prefix              // allowed local networks, applied whenever blocking
 	tunnelRules    map[string][]*nftables.Rule // For tracking iface tunnel bypass rules
 
 	// tables an earlier process left, until taken over or removed
@@ -304,12 +305,21 @@ func (f *LinuxFirewall) Disable() error {
 }
 
 func (f *LinuxFirewall) AllowLocalNetworks(prefixes []netip.Prefix) error {
+	f.localNets = append([]netip.Prefix(nil), prefixes...)
+	f.removeLocalAddrRules()
 	if !f.IsEnabled() {
-		return errors.New("kill switch must be enabled to allow local networks")
+		// Applied by reconcile once blocking starts
+		return nil
 	}
+	return f.applyLocalNets()
+}
 
-	// remove any old rules
-	f.RemoveLocalNetworks()
+// applyLocalNets adds accept rules for localNets on every blocking table.
+func (f *LinuxFirewall) applyLocalNets() error {
+	prefixes := f.localNets
+	if len(prefixes) == 0 {
+		return nil
+	}
 
 	// Accept on input and output, before the terminal drop. A prefix only goes
 	// on the table of its own family. The kernel accepts the other family's
@@ -362,16 +372,28 @@ func (f *LinuxFirewall) AllowLocalNetworks(prefixes []netip.Prefix) error {
 }
 
 func (f *LinuxFirewall) RemoveLocalNetworks() error {
-	for _, rule := range f.localAddrRules {
-		f.conn.DelRule(rule)
-	}
-	f.localAddrRules = nil
-
+	f.localNets = nil
+	f.removeLocalAddrRules()
 	return nil
 }
 
+// removeLocalAddrRules deletes the tracked accept rules. They are re-found first, as a rule
+// kept from AddRule has no kernel handle to delete by.
+func (f *LinuxFirewall) removeLocalAddrRules() {
+	if len(f.localAddrRules) == 0 {
+		return
+	}
+	for _, rule := range f.localAddrRules {
+		f.deleteMatchingRule(rule)
+	}
+	f.localAddrRules = nil
+	if err := f.conn.Flush(); err != nil {
+		log.Error(tag, "Flush after removing local addr rules: %v", err)
+	}
+}
+
 func (f *LinuxFirewall) IsAllowLocalNetworksEnabled() bool {
-	return f.localAddrRules != nil
+	return len(f.localNets) > 0
 }
 
 func prefixMatchesTable(prefix netip.Prefix, family nftables.TableFamily) bool {
@@ -736,6 +758,14 @@ func (f *LinuxFirewall) reconcile() error {
 			f.blockedV4.Store(true)
 		} else {
 			f.blockedV6.Store(true)
+		}
+	}
+
+	// Newly blocking tables need the local network accept rules too
+	if len(f.localNets) > 0 {
+		f.removeLocalAddrRules()
+		if err := f.applyLocalNets(); err != nil {
+			return fmt.Errorf("allow local networks: %w", err)
 		}
 	}
 	return nil

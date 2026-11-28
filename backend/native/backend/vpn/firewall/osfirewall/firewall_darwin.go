@@ -207,12 +207,12 @@ func (f *DarwinFirewall) UpdatePermittedRoutes(routes []netip.Prefix) error {
 }
 
 func (f *DarwinFirewall) AllowLocalNetworks(prefixes []netip.Prefix) error {
-	if !f.IsEnabled() {
-		return fmt.Errorf("kill switch must be enabled to allow local networks")
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.localNets = append([]netip.Prefix(nil), prefixes...)
+	if !f.IsEnabled() {
+		return nil
+	}
 	return f.reconcileLocked()
 }
 
@@ -238,13 +238,12 @@ func (f *DarwinFirewall) Disable() error {
 	prev4, prev6 := f.tunnelReqV4.Load(), f.tunnelReqV6.Load()
 	prevPersist := f.persistKillSwitch.Load()
 	prevTun, prevPort := f.tunName, f.listenPort
-	prevLocal, prevPeer := f.localNets, f.peerPass
+	prevPeer := f.peerPass
 	f.tunnelReqV4.Store(false)
 	f.tunnelReqV6.Store(false)
 	f.persistKillSwitch.Store(false)
 	f.tunName = ""
 	f.listenPort = 0
-	f.localNets = nil
 	f.peerPass = nil
 	if err := f.reconcileLocked(); err != nil {
 		f.tunnelReqV4.Store(prev4)
@@ -252,7 +251,6 @@ func (f *DarwinFirewall) Disable() error {
 		f.persistKillSwitch.Store(prevPersist)
 		f.tunName = prevTun
 		f.listenPort = prevPort
-		f.localNets = prevLocal
 		f.peerPass = prevPeer
 		return err
 	}

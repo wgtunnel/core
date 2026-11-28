@@ -17,6 +17,8 @@ expect class RuntimeManager(applicationProvider: ApplicationProvider) {
 
     suspend fun isKillSwitchEnabled(): Boolean
 
+    suspend fun setAllowedLocalNetworks(networks: Set<String>)
+
     val vpnUsesOsTunFd: Boolean
     val uapiPath: String
 }

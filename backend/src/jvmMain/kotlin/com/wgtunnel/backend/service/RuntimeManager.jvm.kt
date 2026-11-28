@@ -46,16 +46,19 @@ actual class RuntimeManager actual constructor(applicationProvider: ApplicationP
             }
             return
         }
+        // LAN access is its own setting on desktop, see setAllowedLocalNetworks
         val rc = DesktopKillSwitchNative.setKillSwitch(1)
         if (rc < 0) {
             throw BackendException.InternalError("Failed to enable kill switch (native code $rc)")
         }
-        val csv = config.allowedIps.joinToString(",") { it.trim() }.trim()
-        val nets = DesktopKillSwitchNative.setKillSwitchAllowedNetworks(csv)
-        // The kill switch stays on. Failing open here would drop protection over a LAN list.
-        if (nets < 0) {
+    }
+
+    actual suspend fun setAllowedLocalNetworks(networks: Set<String>) {
+        val csv = networks.joinToString(",") { it.trim() }.trim()
+        val rc = DesktopKillSwitchNative.setKillSwitchAllowedNetworks(csv)
+        if (rc < 0) {
             throw BackendException.InternalError(
-                "Failed to apply kill switch allowed networks (native code $nets)",
+                "Failed to apply allowed local networks (native code $rc)",
             )
         }
     }

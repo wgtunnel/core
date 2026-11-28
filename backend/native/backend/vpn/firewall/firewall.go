@@ -40,12 +40,14 @@ type Firewall interface {
 	// and an early boot step puts them back.
 	Release(acrossReboot bool) error
 
-	// AllowLocalNetworks adds bypass rules for the specified local network prefixes. Requires kill switch enabled and
-	// operates independently of tunnel/router bypasses.
+	// AllowLocalNetworks sets the local network prefixes allowed outside the tunnel. They are kept
+	// as a setting and applied whenever the firewall blocks, for the kill switch or a full tunnel,
+	// so they can be set while it is off. Independent of tunnel/router bypasses.
 	AllowLocalNetworks([]netip.Prefix) error
 
-	// RemoveLocalNetworks removes any rules set by AllowLocalNetworks
+	// RemoveLocalNetworks clears the setting and removes its rules
 	RemoveLocalNetworks() error
 
+	// IsAllowLocalNetworksEnabled reports whether local networks are set
 	IsAllowLocalNetworksEnabled() bool
 }
