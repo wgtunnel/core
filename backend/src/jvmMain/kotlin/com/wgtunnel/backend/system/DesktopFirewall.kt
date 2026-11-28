@@ -22,8 +22,8 @@ internal object DesktopFirewallNative {
  */
 object DesktopFirewall {
     /**
-     * Names this install's firewall rules, so two variant installs on one machine keep
-     * theirs apart. Read when the native library loads. Unset keeps release's names.
+     * Names this install's firewall rules, so two variant installs on one machine keep theirs
+     * apart. Read when the native library loads. Unset keeps release's names.
      */
     const val INSTANCE_PROP = "wgtunnel.instance"
 

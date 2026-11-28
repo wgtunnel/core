@@ -45,6 +45,11 @@ fun ActiveConfig.hasIpv6Peers(): Boolean {
     return this.peers.any { it.endpoint?.contains("[") == true }
 }
 
+/** Whether any of [keys] has a live IPv6 endpoint. */
+internal fun ActiveConfig.hasIpv6Peers(keys: Set<PublicKey>): Boolean {
+    return this.peers.any { it.publicKey in keys && it.endpoint?.contains("[") == true }
+}
+
 internal fun ActiveConfig.hasIpv4Peers(): Boolean {
     return this.peers.any { it.endpoint != null && it.endpoint?.contains("[") == false }
 }

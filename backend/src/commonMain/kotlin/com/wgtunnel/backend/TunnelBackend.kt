@@ -872,8 +872,10 @@ class TunnelBackend(
         return feature.copy(
             dynamicDnsRecovery = feature.dynamicDnsRecovery && hasDynamicEndpoints,
             ipv6Recovery = hasDynamicEndpoints && ipv6Restore,
-            ipv4Fallback = feature.ipv4Fallback && hasDynamicEndpoints,
-            // Not tied to the IPv6 setting, an IPv4 path that is down must not strand the tunnel
+            // Neither is tied to the IPv6 setting, a dead path in either family must not strand
+            // the tunnel. IPv6 fallback can move an IPv4 tunnel's peers to IPv6, and only the IPv4
+            // fallback moves them back.
+            ipv4Fallback = hasDynamicEndpoints,
             ipv6Fallback = hasDynamicEndpoints,
         )
     }

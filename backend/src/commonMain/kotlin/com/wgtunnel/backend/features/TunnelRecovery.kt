@@ -56,6 +56,12 @@ internal class TunnelRecovery(
     @OptIn(ExperimentalAtomicApi::class)
     private var lastIpv6RecoveryNetworkKey: AtomicReference<String?> = AtomicReference(null)
 
+    private val dynamicPeerKeys: Set<PublicKey> =
+        mode.config.peers
+            .filter { !it.isStaticallyConfigured && it.endpoint != null }
+            .map { it.publicKey }
+            .toSet()
+
     interface Host {
         fun observe(): Flow<Snapshot>
 
@@ -183,6 +189,15 @@ internal class TunnelRecovery(
                     snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load() &&
                     host.getActiveConfig()?.hasIpv4Peers() == true
 
+            // Only when a hostname peer is on IPv6, otherwise there is nothing to fall back and
+            // the stabilize windows would only delay the bounce. A static IPv6 peer has no A
+            // record, so it never makes the fallback switch and set its network key.
+            suspend fun willTryIpv4(snap: Snapshot): Boolean =
+                snap.recovery.ipv4Fallback &&
+                    snap.activeNetworkKey != null &&
+                    snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load() &&
+                    host.getActiveConfig()?.hasIpv6Peers(dynamicPeerKeys) == true
+
             // A wake, unlock or new network makes earlier attempts stale, so the budget refills.
             fun refreshBudget() {
                 val current = signals.load()
@@ -216,12 +231,11 @@ internal class TunnelRecovery(
             // DDNS re-resolution, a light IPv4 fallback and a light IPv6 fallback, each behind its
             // own stabilize window. IPv6 goes last so IPv4 has had its fresh DNS attempt first.
             suspend fun attemptDdnsAndIpv4Fallback(): LoopStep {
-                val rec = snapshots.value.recovery
-                val willTryIpv4 =
-                    rec.ipv4Fallback &&
-                        snapshots.value.activeNetworkKey != null &&
-                        snapshots.value.activeNetworkKey != lastIpv4FallbackNetworkKey.load()
-                if (!(rec.dynamicDnsRecovery || willTryIpv4 || willTryIpv6(snapshots.value))) {
+                if (
+                    !(snapshots.value.recovery.dynamicDnsRecovery ||
+                        willTryIpv4(snapshots.value) ||
+                        willTryIpv6(snapshots.value))
+                ) {
                     return LoopStep.PROCEED
                 }
 
@@ -241,11 +255,7 @@ internal class TunnelRecovery(
                 }
 
                 val snap = snapshots.value
-                if (
-                    snap.recovery.ipv4Fallback &&
-                        (snap.activeNetworkKey != null) &&
-                        (snap.activeNetworkKey != lastIpv4FallbackNetworkKey.load())
-                ) {
+                if (willTryIpv4(snap)) {
                     tryLightIpv4Fallback(snap)
                     delay(stabilizeWindow)
                     refreshBudget()
